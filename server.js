@@ -178,7 +178,6 @@ io.on('connection', (socket) => {
       if (data && data.username) {
         const user = await User.findOne({ username: data.username.toLowerCase() });
         if (user && user.isMuted) {
-          // Если пользователь замучен, отправляем сообщение только ему об ошибке
           socket.emit('chat_error', { message: 'Вы получили мут и не можете писать в чат!' });
           return;
         }
@@ -192,9 +191,8 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- ТОЧЕЧНЫЙ ТРИГГЕР (Кнопка "Работай сука" по конкретному юзеру) ---
+  // --- ТОЧЕЧНЫЙ ТРИГГЕР ---
   socket.on('admin_target_trigger', (data) => {
-    // data = { targetNick: "имя_юзера", text: "РАБОТАЙ СУКА" }
     for (let [id, clientNick] of onlineUsers.entries()) {
       if (clientNick && clientNick.toLowerCase() === data.targetNick.toLowerCase()) {
         io.to(id).emit('admin_trigger', { text: data.text });
@@ -203,7 +201,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- ГЛОБАЛЬНЫЙ ТРИГГЕР (На случай общего вызова) ---
+  // --- ГЛОБАЛЬНЫЙ ТРИГГЕР ---
   socket.on('admin_trigger', (data) => {
     io.emit('admin_trigger', data);
   });
@@ -217,7 +215,6 @@ io.on('connection', (socket) => {
 });
 
 function broadcastOnlineUsers() {
-  // Убираем дубликаты ников, если пользователь открыл несколько окон
   const uniqueNicks = Array.from(new Set(onlineUsers.values()));
   io.emit('update_chat_users', uniqueNicks);
 }
