@@ -595,7 +595,8 @@ const io = new Server(server, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"]
-  }
+  },
+  maxHttpBufferSize: 25e6 // фото от админа приходят base64-пакетами
 });
 
 // Список активных пользователей в чате
@@ -678,6 +679,41 @@ io.on('connection', (socket) => {
       await event.save();
     } catch (err) {
       console.error('Ошибка отправки уведомления:', err);
+    }
+  });
+
+  // --- ФОТО ОТ АДМИНА: открывается у сотрудника в отдельном окне ---
+  socket.on('admin_image', async (data) => {
+    try {
+      if (!data || !data.dataUrl) return;
+
+      const payload = {
+        dataUrl: String(data.dataUrl),
+        text: String(data.text || ''),
+        from: data.from || 'admin',
+        time: new Date().toLocaleTimeString('ru-RU')
+      };
+
+      if (data.target && data.target !== 'all') {
+        for (const [id, clientNick] of onlineUsers.entries()) {
+          if (clientNick && clientNick.toLowerCase() === String(data.target).toLowerCase()) {
+            io.to(id).emit('show_image', payload);
+          }
+        }
+      } else {
+        io.emit('show_image', payload);
+      }
+
+      // В историю — без самого фото, только факт отправки
+      const event = new Event({
+        date: todayStr(),
+        type: 'image',
+        user: (data.from || 'admin').toLowerCase(),
+        data: { target: data.target || 'all', text: payload.text }
+      });
+      await event.save();
+    } catch (err) {
+      console.error('Ошибка отправки фото:', err.message);
     }
   });
 
