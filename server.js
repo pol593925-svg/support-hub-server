@@ -28,6 +28,7 @@ const userSchema = new mongoose.Schema({
   role: { type: String, default: 'user' }, // 'admin' или 'user'
   team: { type: String, default: '' },     // команда (из списка команд админа)
   position: { type: String, default: '' }, // должность (ставит админ в админке)
+  email: { type: String, default: '' },    // почта сотрудника (админ вбивает; для уведомлений)
   avatar: { type: String, default: '' },   // аватарка (data URL, ставит сам)
   isMuted: { type: Boolean, default: false },
   isBanned: { type: Boolean, default: false }
@@ -93,6 +94,27 @@ const feedItemSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 const FeedItem = mongoose.model('FeedItem', feedItemSchema);
+
+// Схема личного сообщения
+const messageSchema = new mongoose.Schema({
+  from: { type: String, required: true, lowercase: true },
+  to: { type: String, required: true, lowercase: true },
+  text: { type: String, required: true },
+  read: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
+});
+messageSchema.index({ from: 1, to: 1, createdAt: -1 });
+const Message = mongoose.model('Message', messageSchema);
+
+// Схема свайп-оценки (Дайсерчвинчик): один голос «от→кому»
+const swipeSchema = new mongoose.Schema({
+  from: { type: String, required: true, lowercase: true },
+  to: { type: String, required: true, lowercase: true },
+  kind: { type: String, enum: ['like', 'dislike'], required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+swipeSchema.index({ from: 1, to: 1 }, { unique: true });
+const Swipe = mongoose.model('Swipe', swipeSchema);
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
@@ -832,6 +854,153 @@ app.post('/api/admin/position', verifyAdmin, async (req, res) => {
     user.position = String(req.body.position || '').slice(0, 60);
     await user.save();
     res.json({ success: true, username: user.username, position: user.position });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Поставить должность (админ)
+app.post('/api/admin/position', verifyAdmin, async (req, res) => {
+  try {
+    const target = (req.body.username || '').trim().toLowerCase();
+    const user = await User.findOne({ username: target });
+    if (!user) return res.status(404).json({ success: false, message: 'Пользователь не найден' });
+    user.position = String(req.body.position || '').slice(0, 60);
+    await user.save();
+    res.json({ success: true, username: user.username, position: user.position });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Поставить e-mail сотрудника (админ) — для будущих почтовых уведомлений
+app.post('/api/admin/email', verifyAdmin, async (req, res) => {
+  try {
+    const target = (req.body.username || '').trim().toLowerCase();
+    const user = await User.findOne({ username: target });
+    if (!user) return res.status(404).json({ success: false, message: 'Пользователь не найден' });
+    user.email = String(req.body.email || '').slice(0, 120);
+    await user.save();
+    res.json({ success: true, username: user.username, email: user.email });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== ЛИЧНЫЕ СООБЩЕНИЯ ====================
+
+// Список диалогов: собеседник, последнее сообщение, число непрочитанных
+app.get('/api/messages/inbox', async (req, res) => {
+  try {
+    const user = (req.query.user || '').trim().toLowerCase();
+    if (!user) return res.status(400).json({ success: false, message: 'Укажите ник' });
+
+    const msgs = await Message.find({ $or: [{ from: user }, { to: user }] }).sort({ createdAt: -1 }).limit(500);
+    const dialogs = {};
+    msgs.forEach(m => {
+      const other = m.from === user ? m.to : m.from;
+      if (!dialogs[other]) {
+        dialogs[other] = {
+          with: other,
+          lastText: m.text,
+          lastTime: m.createdAt,
+          lastFrom: m.from,
+          unread: 0
+        };
+      }
+      if (m.to === user && !m.read) dialogs[other].unread++;
+    });
+    res.json({ success: true, dialogs: Object.values(dialogs) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Переписка с конкретным ником (помечает входящие прочитанными)
+app.get('/api/messages', async (req, res) => {
+  try {
+    const user = (req.query.user || '').trim().toLowerCase();
+    const withUser = (req.query.with || '').trim().toLowerCase();
+    if (!user || !withUser) return res.status(400).json({ success: false, message: 'Укажите оба ника' });
+    const messages = await Message.find({
+      $or: [{ from: user, to: withUser }, { from: withUser, to: user }]
+    }).sort({ createdAt: 1 }).limit(300);
+    await Message.updateMany({ from: withUser, to: user, read: false }, { $set: { read: true } });
+    res.json({ success: true, messages });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Отправить личное сообщение
+app.post('/api/messages', async (req, res) => {
+  try {
+    const from = (req.body.from || '').trim().toLowerCase();
+    const to = (req.body.to || '').trim().toLowerCase();
+    const text = String(req.body.text || '').trim().slice(0, 1000);
+    if (!from || !to || !text) return res.status(400).json({ success: false, message: 'Пустое сообщение' });
+    if (from === to) return res.status(400).json({ success: false, message: 'Себе писать нельзя' });
+    const target = await User.findOne({ username: to });
+    if (!target) return res.status(404).json({ success: false, message: 'Получатель не найден' });
+    const msg = new Message({ from, to, text });
+    await msg.save();
+    res.json({ success: true, message: msg });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== ДАЙСЕРЧВИНЧИК (свайп-оценки) ====================
+
+// Пользователи, которых я ещё не оценивал (для свайпалки)
+app.get('/api/swipe/users', async (req, res) => {
+  try {
+    const from = (req.query.from || '').trim().toLowerCase();
+    if (!from) return res.status(400).json({ success: false, message: 'Укажите ник' });
+    const voted = await Swipe.find({ from }, { to: 1 });
+    const votedNicks = voted.map(s => s.to);
+    const users = await User.find(
+      { username: { $ne: from, $nin: votedNicks }, isBanned: false },
+      { username: 1, avatar: 1, team: 1, position: 1 }
+    ).sort({ username: 1 });
+    res.json({ success: true, users });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Проголосовать: like | dislike (переголосовать можно)
+app.post('/api/swipe', async (req, res) => {
+  try {
+    const from = (req.body.from || '').trim().toLowerCase();
+    const to = (req.body.to || '').trim().toLowerCase();
+    const kind = req.body.kind === 'dislike' ? 'dislike' : 'like';
+    if (!from || !to || from === to) return res.status(400).json({ success: false, message: 'Неверный голос' });
+    await Swipe.updateOne({ from, to }, { $set: { kind, createdAt: new Date() } }, { upsert: true });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Итоги: сколько лайков/дизлайков получил каждый (видно всем в конце списка)
+app.get('/api/swipe/results', async (req, res) => {
+  try {
+    const likes = await Swipe.aggregate([
+      { $match: { kind: 'like' } },
+      { $group: { _id: '$to', n: { $sum: 1 } } }
+    ]);
+    const dislikes = await Swipe.aggregate([
+      { $match: { kind: 'dislike' } },
+      { $group: { _id: '$to', n: { $sum: 1 } } }
+    ]);
+    const result = {};
+    likes.forEach(l => { result[l._id] = { likes: l.n, dislikes: 0 }; });
+    dislikes.forEach(d => {
+      if (!result[d._id]) result[d._id] = { likes: 0, dislikes: 0 };
+      result[d._id].dislikes = d.n;
+    });
+    res.json({ success: true, results: result });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
