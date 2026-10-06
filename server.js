@@ -11,7 +11,7 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://sashabriginets8_db_use
 
 const app = express();
 app.use(cors());
-app.use(express.json()); // Обязательно для чтения JSON в req.body
+app.use(express.json({ limit: '15mb' })); // картинки ленты и аватарки приходят base64 в JSON
 
 mongoose.connect(MONGO_URI).then(() => {
   console.log("🟢 БАЗА ДАННЫХ ПОДКЛЮЧЕНА");
@@ -27,6 +27,8 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role: { type: String, default: 'user' }, // 'admin' или 'user'
   team: { type: String, default: '' },     // команда (из списка команд админа)
+  position: { type: String, default: '' }, // должность (ставит админ в админке)
+  avatar: { type: String, default: '' },   // аватарка (data URL, ставит сам)
   isMuted: { type: Boolean, default: false },
   isBanned: { type: Boolean, default: false }
 });
@@ -69,6 +71,28 @@ const dailyStatSchema = new mongoose.Schema({
 });
 dailyStatSchema.index({ date: 1, username: 1 }, { unique: true });
 const DailyStat = mongoose.model('DailyStat', dailyStatSchema);
+
+// Схема задачи чек-листа дня
+const taskSchema = new mongoose.Schema({
+  date: { type: String, required: true },   // YYYY-MM-DD
+  text: { type: String, required: true },
+  createdBy: { type: String, default: '' },
+  done: { type: [String], default: [] }     // ники, кто отметил выполненным
+});
+const Task = mongoose.model('Task', taskSchema);
+
+// Схема записи ленты картинок
+const feedItemSchema = new mongoose.Schema({
+  user: { type: String, required: true },
+  dataUrl: { type: String, required: true },
+  caption: { type: String, default: '' },
+  likes: { type: [String], default: [] },
+  dislikes: { type: [String], default: [] },
+  comments: { type: [{ user: String, text: String, time: String }], default: [] },
+  pinned: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
+});
+const FeedItem = mongoose.model('FeedItem', feedItemSchema);
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
@@ -588,6 +612,231 @@ app.delete('/api/admin/exchanges', verifyAdmin, async (req, res) => {
   }
 });
 
+// ==================== ЧЕК-ЛИСТ ДНЯ ====================
+
+// Задачи за дату (публично — все видят чек-лист)
+app.get('/api/tasks', async (req, res) => {
+  try {
+    const date = (req.query.date && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)) ? req.query.date : todayStr();
+    const tasks = await Task.find({ date }).sort({ _id: 1 });
+    res.json({ success: true, date, tasks });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Добавить задачу (админ)
+app.post('/api/admin/tasks', verifyAdmin, async (req, res) => {
+  try {
+    const text = (req.body.text || '').trim();
+    if (!text) return res.status(400).json({ success: false, message: 'Введите текст задачи' });
+    const date = (req.body.date && /^\d{4}-\d{2}-\d{2}$/.test(req.body.date)) ? req.body.date : todayStr();
+    const task = new Task({ date, text, createdBy: req.body.adminUsername || '' });
+    await task.save();
+    res.json({ success: true, task });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Удалить задачу (админ)
+app.delete('/api/admin/tasks', verifyAdmin, async (req, res) => {
+  try {
+    await Task.deleteOne({ _id: req.query.id });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Отметить/снять отметку «сделано» (сотрудник сам за себя)
+app.post('/api/tasks/toggle', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const task = await Task.findById(req.body.id);
+    if (!task) return res.status(404).json({ success: false, message: 'Задача не найдена' });
+    const i = task.done.indexOf(username);
+    if (i >= 0) task.done.splice(i, 1); else task.done.push(username);
+    await task.save();
+    res.json({ success: true, done: task.done });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== ЛЕНТА КАРТИНОК ====================
+
+// Лента: сначала закреплённые, потом свежие (до 100)
+app.get('/api/feed', async (req, res) => {
+  try {
+    const items = await FeedItem.find().sort({ pinned: -1, createdAt: -1 }).limit(100);
+    res.json({ success: true, items });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Добавить запись (любой сотрудник)
+app.post('/api/feed', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const dataUrl = String(req.body.dataUrl || '');
+    if (!username || !dataUrl) return res.status(400).json({ success: false, message: 'Нужен ник и картинка' });
+    if (dataUrl.length > 14e6) return res.status(400).json({ success: false, message: 'Картинка слишком большая' });
+    const item = new FeedItem({ user: username, dataUrl, caption: String(req.body.caption || '').slice(0, 300) });
+    await item.save();
+    res.json({ success: true, item });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Лайк/дизлайк (переключение: повторное нажатие снимает)
+app.post('/api/feed/react', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const kind = req.body.kind === 'dislike' ? 'dislikes' : 'likes';
+    const other = kind === 'likes' ? 'dislikes' : 'likes';
+    const item = await FeedItem.findById(req.body.id);
+    if (!item) return res.status(404).json({ success: false, message: 'Запись не найдена' });
+    const i = item[kind].indexOf(username);
+    if (i >= 0) item[kind].splice(i, 1);
+    else {
+      item[kind].push(username);
+      const j = item[other].indexOf(username);
+      if (j >= 0) item[other].splice(j, 1); // нельзя лайкать и дизлайкать одновременно
+    }
+    await item.save();
+    res.json({ success: true, likes: item.likes, dislikes: item.dislikes });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Комментарий под записью
+app.post('/api/feed/comment', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const text = String(req.body.text || '').trim().slice(0, 200);
+    if (!text) return res.status(400).json({ success: false, message: 'Пустой комментарий' });
+    const item = await FeedItem.findById(req.body.id);
+    if (!item) return res.status(404).json({ success: false, message: 'Запись не найдена' });
+    item.comments.push({ user: username, text, time: new Date().toLocaleTimeString('ru-RU') });
+    await item.save();
+    res.json({ success: true, comments: item.comments });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Удалить запись: автор сам, админ — любую
+app.delete('/api/feed', async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    const item = await FeedItem.findById(req.query.id);
+    if (!item) return res.status(404).json({ success: false, message: 'Запись не найдена' });
+    if (item.user !== username) {
+      const admin = await User.findOne({ username });
+      if (!admin || admin.role !== 'admin') {
+        return res.status(403).json({ success: false, message: 'Удалить может автор или админ' });
+      }
+    }
+    await FeedItem.deleteOne({ _id: item._id });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Закрепить/открепить (админ)
+app.post('/api/admin/feed/pin', verifyAdmin, async (req, res) => {
+  try {
+    const item = await FeedItem.findById(req.body.id);
+    if (!item) return res.status(404).json({ success: false, message: 'Запись не найдена' });
+    item.pinned = !!req.body.pinned;
+    await item.save();
+    res.json({ success: true, pinned: item.pinned });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== ПРОФИЛИ ====================
+
+// Карточка пользователя: команда, должность, аватар, статистика месяца
+app.get('/api/profile', async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    if (!username) return res.status(400).json({ success: false, message: 'Укажите ник' });
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Пользователь не найден' });
+
+    // Статистика за текущий месяц
+    const now = new Date();
+    const from = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const to = `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}`;
+    const statAgg = await DailyStat.aggregate([
+      { $match: { date: { $gte: from, $lte: to }, username } },
+      { $group: { _id: null, truffles: { $sum: '$truffles' }, approves: { $sum: '$approves' } } }
+    ]);
+    const shiftCount = await Event.countDocuments({ date: { $gte: from, $lte: to }, type: 'shift', user: username });
+    const likesReceived = await FeedItem.aggregate([
+      { $match: { user: username } },
+      { $group: { _id: null, n: { $sum: { $size: '$likes' } } } }
+    ]);
+
+    res.json({
+      success: true,
+      profile: {
+        username: user.username,
+        team: user.team || '',
+        position: user.position || '',
+        avatar: user.avatar || '',
+        month: {
+          truffles: statAgg[0]?.truffles || 0,
+          approves: statAgg[0]?.approves || 0,
+          shifts: shiftCount,
+          likes: likesReceived[0]?.n || 0
+        }
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Поставить/сменить свой аватар
+app.post('/api/profile', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const dataUrl = String(req.body.avatar || '');
+    if (!username) return res.status(400).json({ success: false, message: 'Укажите ник' });
+    if (dataUrl.length > 400000) return res.status(400).json({ success: false, message: 'Аватар слишком большой (до ~300 КБ)' });
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Пользователь не найден' });
+    user.avatar = dataUrl;
+    await user.save();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Поставить должность (админ)
+app.post('/api/admin/position', verifyAdmin, async (req, res) => {
+  try {
+    const target = (req.body.username || '').trim().toLowerCase();
+    const user = await User.findOne({ username: target });
+    if (!user) return res.status(404).json({ success: false, message: 'Пользователь не найден' });
+    user.position = String(req.body.position || '').slice(0, 60);
+    await user.save();
+    res.json({ success: true, username: user.username, position: user.position });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // --- СЕРВЕР И СОКЕТЫ ---
 
 const server = http.createServer(app);
@@ -625,6 +874,25 @@ io.on('connection', (socket) => {
           return;
         }
       }
+      // Упоминания: @ник в сообщении → у упомянутого вылезает уведомление поверх окон
+      if (data && data.message) {
+        const mentions = String(data.message).match(/@([a-zA-Z0-9_]+)/g) || [];
+        const from = (data.username || 'кто-то').toLowerCase();
+        for (const m of mentions) {
+          const nick = m.slice(1).toLowerCase();
+          if (nick === from) continue; // себя не пинговать
+          for (const [id, clientNick] of onlineUsers.entries()) {
+            if (clientNick && clientNick.toLowerCase() === nick) {
+              io.to(id).emit('show_notification', {
+                text: `💬 ${data.username} упомянул тебя в чате: ${String(data.message).slice(0, 120)}`,
+                from: 'упоминание',
+                time: new Date().toLocaleTimeString('ru-RU')
+              });
+            }
+          }
+        }
+      }
+
       io.emit('chat_message', data);
     } catch (err) {
       console.error('Ошибка при проверке прав сообщения:', err);
