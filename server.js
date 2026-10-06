@@ -275,6 +275,34 @@ app.post('/api/events', async (req, res) => {
     });
 
     await event.save();
+
+    // Уведомляем ТЛ команды: ТЛ — пользователь, чей ник совпадает с названием команды
+    if (['call', 'leave', 'shift', 'bug'].includes(String(type))) {
+      try {
+        const sender = await User.findOne({ username: event.user });
+        if (sender && sender.team) {
+          const tlNick = sender.team.trim().toLowerCase();
+          // ТЛ не получает уведомления о собственных действиях
+          if (tlNick && tlNick !== event.user) {
+            const payload = {
+              type: String(type),
+              user: event.user,
+              data: fields,
+              time: new Date().toLocaleTimeString('ru-RU'),
+              date: eventDate
+            };
+            for (const [id, clientNick] of onlineUsers.entries()) {
+              if (clientNick && clientNick.toLowerCase() === tlNick) {
+                io.to(id).emit('tl_event', payload);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Ошибка уведомления ТЛ:', e.message);
+      }
+    }
+
     res.json({ success: true, id: event._id, durationMin });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -292,6 +320,35 @@ app.get('/api/events', verifyAdmin, async (req, res) => {
 
     const events = await Event.find(filter).sort({ createdAt: -1 }).limit(500);
     res.json({ success: true, events });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// События команды ТЛ за дату (ТЛ = ник, совпадающий с названием команды). Только коллы, отпросы, смены, отписи.
+app.get('/api/tl/events', async (req, res) => {
+  try {
+    const tl = (req.query.tl || '').trim().toLowerCase();
+    if (!tl) return res.status(400).json({ success: false, message: 'Не указан ТЛ' });
+
+    const team = await Team.findOne({ name: new RegExp('^' + tl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') });
+    if (!team) {
+      return res.status(403).json({ success: false, message: 'Нет команды с таким ником — вы не ТЛ' });
+    }
+
+    const members = await User.find({ team: team.name }, { username: 1 });
+    const memberNicks = members.map(m => m.username);
+    if (!memberNicks.length) return res.json({ success: true, team: team.name, events: [] });
+
+    const filter = {
+      user: { $in: memberNicks },
+      type: { $in: ['call', 'leave', 'shift', 'bug'] }
+    };
+    const date = req.query.date;
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) filter.date = date;
+
+    const events = await Event.find(filter).sort({ createdAt: -1 }).limit(300);
+    res.json({ success: true, team: team.name, events });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
