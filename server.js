@@ -412,6 +412,30 @@ app.delete('/api/admin/teams', verifyAdmin, async (req, res) => {
   }
 });
 
+// Сменить роль пользователя (админ): role = 'admin' | 'user'
+app.post('/api/admin/role', verifyAdmin, async (req, res) => {
+  try {
+    const target = (req.body.username || '').trim().toLowerCase();
+    const role = req.body.role;
+    if (!target) return res.status(400).json({ success: false, message: 'Не указан ник' });
+    if (!['admin', 'user'].includes(role)) {
+      return res.status(400).json({ success: false, message: 'Роль должна быть admin или user' });
+    }
+    if (target === 'fifflaren' && role !== 'admin') {
+      return res.status(400).json({ success: false, message: 'У fifflaren нельзя забрать админку' });
+    }
+
+    const user = await User.findOne({ username: target });
+    if (!user) return res.status(404).json({ success: false, message: 'Пользователь не найден' });
+
+    user.role = role;
+    await user.save();
+    res.json({ success: true, username: user.username, role: user.role });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // --- СПРАВОЧНИК БИРЖ (на сервере) ---
 
 // Весь справочник (публично)
