@@ -368,6 +368,55 @@ app.get('/api/admin/stats/summary', verifyAdmin, async (req, res) => {
   }
 });
 
+// Личная статистика сотрудника (без админки): неделя и месяц относительно даты
+app.get('/api/stats/mine', async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    if (!username) return res.status(400).json({ success: false, message: 'Укажите ник' });
+
+    // Календарные границы недели (пн–вс) и месяца от текущей даты
+    const now = new Date();
+    const y = now.getFullYear(), m = now.getMonth();
+    const dayOfWeek = (now.getDay() + 6) % 7; // пн = 0
+    const monday = new Date(now); monday.setDate(now.getDate() - dayOfWeek);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const first = new Date(y, m, 1);
+    const last = new Date(y, m + 1, 0);
+    const fmt = d => d.toLocaleDateString('sv-SE'); // YYYY-MM-DD локально
+
+    const weekFrom = fmt(monday), weekTo = fmt(sunday);
+    const monthFrom = fmt(first), monthTo = fmt(last);
+
+    async function sumFor(from, to) {
+      const statAgg = await DailyStat.aggregate([
+        { $match: { date: { $gte: from, $lte: to }, username } },
+        { $group: { _id: null, truffles: { $sum: '$truffles' }, approves: { $sum: '$approves' } } }
+      ]);
+      const overtimeAgg = await Event.aggregate([
+        { $match: { date: { $gte: from, $lte: to }, type: 'overtime', user: username } },
+        { $group: { _id: null, overtimeMin: { $sum: '$durationMin' } } }
+      ]);
+      return {
+        truffles: statAgg[0]?.truffles || 0,
+        approves: statAgg[0]?.approves || 0,
+        overtimeMin: overtimeAgg[0]?.overtimeMin || 0
+      };
+    }
+
+    const week = await sumFor(weekFrom, weekTo);
+    const month = await sumFor(monthFrom, monthTo);
+
+    res.json({
+      success: true,
+      username,
+      week: { from: weekFrom, to: weekTo, ...week },
+      month: { from: monthFrom, to: monthTo, ...month }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // --- КОМАНДЫ (ШТАБ) ---
 
 // Список команд вместе с составом (публично — для регистрации и Штаба)
