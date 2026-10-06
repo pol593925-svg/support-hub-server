@@ -26,10 +26,26 @@ const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true, lowercase: true },
   password: { type: String, required: true },
   role: { type: String, default: 'user' }, // 'admin' или 'user'
+  team: { type: String, default: '' },     // команда (из списка команд админа)
   isMuted: { type: Boolean, default: false },
   isBanned: { type: Boolean, default: false }
 });
 const User = mongoose.model('User', userSchema);
+
+// Схема команды (Штаб). Админ добавляет, при регистрации выбирают
+const teamSchema = new mongoose.Schema({
+  name: { type: String, required: true, unique: true, trim: true }
+});
+const Team = mongoose.model('Team', teamSchema);
+
+// Схема записи справочника бирж
+const exchangeSchema = new mongoose.Schema({
+  section: { type: String, enum: ['yes', 'condition', 'no'], required: true },
+  name: { type: String, required: true, trim: true },
+  condition: { type: String, default: '' }
+});
+exchangeSchema.index({ section: 1, name: 1 }, { unique: true });
+const Exchange = mongoose.model('Exchange', exchangeSchema);
 
 // Схема события (логи, отпросы, колы, баги, овертаймы, уведомления)
 const eventSchema = new mongoose.Schema({
@@ -112,10 +128,22 @@ app.post('/api/register', async (req, res) => {
     // Если регистрируешься ты, автоматически даем права админа
     const role = (username === 'fifflaren') ? 'admin' : 'user';
 
+    // Команда (проверяем, что она существует в списке команд)
+    let team = '';
+    if (req.body.team) {
+      const teamName = String(req.body.team).trim();
+      const teamDoc = await Team.findOne({ name: new RegExp(`^${teamName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+      if (!teamDoc) {
+        return res.status(400).json({ success: false, message: 'Такой команды не существует!' });
+      }
+      team = teamDoc.name;
+    }
+
     const newUser = new User({
       username,
       password: hashedPassword,
-      role
+      role,
+      team
     });
 
     await newUser.save();
@@ -154,6 +182,7 @@ app.post('/api/login', async (req, res) => {
       message: 'Успешный вход!',
       username: user.username,
       role: user.role,
+      team: user.team || '',
       isMuted: user.isMuted
     });
   } catch (err) {
@@ -334,6 +363,96 @@ app.get('/api/admin/stats/summary', verifyAdmin, async (req, res) => {
     });
 
     res.json({ success: true, from, to, summary: result });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- КОМАНДЫ (ШТАБ) ---
+
+// Список команд вместе с составом (публично — для регистрации и Штаба)
+app.get('/api/teams', async (req, res) => {
+  try {
+    const teams = await Team.find().sort({ name: 1 });
+    const users = await User.find({ team: { $ne: '' } }, { username: 1, team: 1 });
+    const roster = teams.map(t => ({
+      name: t.name,
+      users: users.filter(u => u.team === t.name).map(u => u.username)
+    }));
+    res.json({ success: true, teams: roster });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Добавить команду (админ)
+app.post('/api/admin/teams', verifyAdmin, async (req, res) => {
+  try {
+    const name = (req.body.name || '').trim();
+    if (!name) return res.status(400).json({ success: false, message: 'Введите название команды' });
+
+    await Team.updateOne({ name }, { $setOnInsert: { name } }, { upsert: true });
+    const teams = await Team.find().sort({ name: 1 });
+    res.json({ success: true, teams: teams.map(t => t.name) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Удалить команду (админ). У сотрудников команда останется как текст, но из Штаба уйдёт
+app.delete('/api/admin/teams', verifyAdmin, async (req, res) => {
+  try {
+    const name = (req.query.name || '').trim();
+    if (!name) return res.status(400).json({ success: false, message: 'Не указано название' });
+
+    await Team.deleteOne({ name });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- СПРАВОЧНИК БИРЖ (на сервере) ---
+
+// Весь справочник (публично)
+app.get('/api/exchanges', async (req, res) => {
+  try {
+    const entries = await Exchange.find().sort({ name: 1 });
+    res.json({ success: true, exchanges: entries });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Добавить запись (админ): section = 'yes' | 'condition' | 'no'
+app.post('/api/admin/exchanges', verifyAdmin, async (req, res) => {
+  try {
+    const { section, name, condition } = req.body;
+    if (!['yes', 'condition', 'no'].includes(section)) {
+      return res.status(400).json({ success: false, message: 'Неверный раздел' });
+    }
+    const cleanName = (name || '').trim();
+    if (!cleanName) return res.status(400).json({ success: false, message: 'Введите название биржи' });
+
+    await Exchange.updateOne(
+      { section, name: cleanName },
+      { $setOnInsert: { section, name: cleanName, condition: (condition || '').trim() } },
+      { upsert: true }
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Удалить запись (админ)
+app.delete('/api/admin/exchanges', verifyAdmin, async (req, res) => {
+  try {
+    const { section, name } = req.query;
+    if (!section || !name) return res.status(400).json({ success: false, message: 'Не указаны раздел или название' });
+
+    await Exchange.deleteOne({ section, name });
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
