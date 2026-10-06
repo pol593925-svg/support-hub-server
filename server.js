@@ -7,7 +7,7 @@ const bcrypt = require('bcryptjs');
 
 // === ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ ===
 // Новая строка подключения MongoDB вставляется ниже (или через переменную окружения MONGO_URI на Render)
-const MONGO_URI = process.env.MONGO_URI || 'ВСТАВЬ_СЮДА_НОВУЮ_СТРОКУ_ПОДКЛЮЧЕНИЯ_MONGODB';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://sashabriginets8_db_user:L0WmfQD7AfSRHYox@cluster0.swcowbh.mongodb.net/?appName=Cluster0';
 
 const app = express();
 app.use(cors());
