@@ -754,6 +754,25 @@ app.post('/api/admin/role', verifyAdmin, async (req, res) => {
   }
 });
 
+// Сменить пароль пользователю (админ, если юзер забыл)
+app.post('/api/admin/password', verifyAdmin, async (req, res) => {
+  try {
+    const target = (req.body.username || '').trim().toLowerCase();
+    const newPassword = String(req.body.newPassword || '');
+    if (!target) return res.status(400).json({ success: false, message: 'Не указан ник' });
+    if (newPassword.length < 4) return res.status(400).json({ success: false, message: 'Пароль минимум 4 символа' });
+
+    const user = await User.findOne({ username: target });
+    if (!user) return res.status(404).json({ success: false, message: 'Пользователь не найден' });
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    res.json({ success: true, username: user.username });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // --- СПРАВОЧНИК БИРЖ (на сервере) ---
 
 // Весь справочник (публично)
