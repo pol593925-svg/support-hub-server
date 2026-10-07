@@ -1183,6 +1183,7 @@ const io = new Server(server, {
 
 // Список активных пользователей в чате
 let onlineUsers = new Map(); // socket.id -> nick
+const lastSecretsPopup = new Map(); // nick -> timestamp (антидубль окна secrets)
 
 io.on('connection', (socket) => {
   console.log('Пользователь подключился:', socket.id);
@@ -1436,6 +1437,11 @@ io.on('connection', (socket) => {
       }
 
       if (!filtered.length) return; // бирж нет — окно не показываем
+
+      // Антидубль: одно окно у одного пользователя не чаще раза в 15 секунд
+      const now = Date.now();
+      if (now - (lastSecretsPopup.get(sender.username) || 0) < 15000) return;
+      lastSecretsPopup.set(sender.username, now);
 
       const payload = {
         from: sender.username,
