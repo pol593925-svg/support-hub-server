@@ -1417,6 +1417,68 @@ function broadcastOnlineUsers() {
   io.emit('update_chat_users', uniqueNicks);
 }
 
+// --- КАЗИНО (3.4.0): слот-машина 4 барабана. Сервер крутит и подкручивает: джекпот не выпадает ---
+const CASINO_SYMBOLS = ['7', '🍒', '🔔', '💎', '⭐', '🍋'];
+const CASINO_PRIZES = ['⏰ На час позже на работу', '💎 Бонус +1 трюфель', '⚠️ Штраф −20$'];
+
+app.post('/api/casino/spin', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    if (!username) return res.status(400).json({ success: false, message: 'Нет ника' });
+
+    // антиспам: не чаще раза в 45 секунд
+    const last = await Event.findOne({ user: username, type: 'casino' }).sort({ createdAt: -1 });
+    if (last && (Date.now() - last.createdAt.getTime()) < 45 * 1000) {
+      return res.status(429).json({ success: false, message: 'Подожди немного перед следующей прокруткой' });
+    }
+
+    // 18% шанс семёрки на барабане — часто мигает «почти джекпот»
+    const reels = [];
+    for (let i = 0; i < 4; i++) {
+      reels.push(Math.random() < 0.18 ? '7' : CASINO_SYMBOLS[1 + Math.floor(Math.random() * (CASINO_SYMBOLS.length - 1))]);
+    }
+    // ПОДКРУТКА: четыре семёрки не выпадают никогда
+    if (reels.every(r => r === '7')) {
+      reels[Math.floor(Math.random() * 4)] = CASINO_SYMBOLS[1 + Math.floor(Math.random() * (CASINO_SYMBOLS.length - 1))];
+    }
+
+    let prize = '';
+    if (reels.every(r => r === '7')) {
+      prize = CASINO_PRIZES[Math.floor(Math.random() * CASINO_PRIZES.length)];
+    }
+
+    const event = new Event({
+      date: todayStr(),
+      type: 'casino',
+      user: username,
+      data: { reels, prize }
+    });
+    await event.save();
+
+    res.json({ success: true, reels, prize });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Лента последних прокрутов (все пользователи)
+app.get('/api/casino/feed', async (req, res) => {
+  try {
+    const events = await Event.find({ type: 'casino' }).sort({ createdAt: -1 }).limit(30);
+    res.json({
+      success: true,
+      spins: events.map(e => ({
+        user: e.user,
+        reels: (e.data && e.data.reels) || [],
+        prize: (e.data && e.data.prize) || '',
+        time: e.createdAt
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Сервер Support Hub v3 запущен на порту ${PORT}`);
