@@ -31,7 +31,9 @@ const userSchema = new mongoose.Schema({
   email: { type: String, default: '' },    // почта сотрудника (админ вбивает; для уведомлений)
   avatar: { type: String, default: '' },   // аватарка (data URL, ставит сам)
   isMuted: { type: Boolean, default: false },
-  isBanned: { type: Boolean, default: false }
+  isBanned: { type: Boolean, default: false },
+  casinoBalance: { type: Number, default: null },   // 3.5.0 — банк казино (null = ещё не выданы стартовые 500)
+  casinoLastDaily: { type: String, default: '' }     // дата последнего ежедневного бонуса
 });
 const User = mongoose.model('User', userSchema);
 
@@ -1417,59 +1419,190 @@ function broadcastOnlineUsers() {
   io.emit('update_chat_users', uniqueNicks);
 }
 
-// --- КАЗИНО (3.4.0): слот-машина 4 барабана. Сервер крутит и подкручивает: джекпот не выпадает ---
+// --- КАЗИНО (3.5.0): баланс, слот 4 барабана, рулетка, ежедневный бонус ---
 const CASINO_SYMBOLS = ['7', '🍒', '🔔', '💎', '⭐', '🍋'];
-const CASINO_PRIZES = ['⏰ На час позже на работу', '💎 Бонус +1 трюфель', '⚠️ Штраф −20$'];
+const RED_NUMBERS = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
+const CASINO_START_BALANCE = 500;
+const CASINO_DAILY = 20;
 
-app.post('/api/casino/spin', async (req, res) => {
+// Один прокрут слота: реальные шансы, выплаты как в казино
+function slotRoll() {
+  const reels = [];
+  for (let i = 0; i < 4; i++) {
+    reels.push(Math.random() < 0.18 ? '7' : CASINO_SYMBOLS[1 + Math.floor(Math.random() * (CASINO_SYMBOLS.length - 1))]);
+  }
+  const counts = {};
+  reels.forEach(r => { counts[r] = (counts[r] || 0) + 1; });
+  const maxCount = Math.max(...Object.values(counts));
+  let multiplier = 0;
+  if (maxCount === 4) multiplier = reels[0] === '7' ? 100 : 25;   // джекпот 7777 или четвёрка
+  else if (maxCount === 3) multiplier = 5;                        // три в ряд
+  else {
+    for (let i = 0; i < 3; i++) {                                 // пара рядом — возврат ставки
+      if (reels[i] === reels[i + 1]) { multiplier = 1; break; }
+    }
+  }
+  return { reels, multiplier };
+}
+
+// Баланс + доступность ежедневного бонуса
+app.get('/api/casino/state', async (req, res) => {
   try {
-    const username = (req.body.username || '').trim().toLowerCase();
-    if (!username) return res.status(400).json({ success: false, message: 'Нет ника' });
-
-    // антиспам: не чаще раза в 45 секунд
-    const last = await Event.findOne({ user: username, type: 'casino' }).sort({ createdAt: -1 });
-    if (last && (Date.now() - last.createdAt.getTime()) < 45 * 1000) {
-      return res.status(429).json({ success: false, message: 'Подожди немного перед следующей прокруткой' });
-    }
-
-    // 18% шанс семёрки на барабане — часто мигает «почти джекпот»
-    const reels = [];
-    for (let i = 0; i < 4; i++) {
-      reels.push(Math.random() < 0.18 ? '7' : CASINO_SYMBOLS[1 + Math.floor(Math.random() * (CASINO_SYMBOLS.length - 1))]);
-    }
-    // ПОДКРУТКА: четыре семёрки не выпадают никогда
-    if (reels.every(r => r === '7')) {
-      reels[Math.floor(Math.random() * 4)] = CASINO_SYMBOLS[1 + Math.floor(Math.random() * (CASINO_SYMBOLS.length - 1))];
-    }
-
-    let prize = '';
-    if (reels.every(r => r === '7')) {
-      prize = CASINO_PRIZES[Math.floor(Math.random() * CASINO_PRIZES.length)];
-    }
-
-    const event = new Event({
-      date: todayStr(),
-      type: 'casino',
-      user: username,
-      data: { reels, prize }
+    const username = (req.query.username || '').trim().toLowerCase();
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    if (user.casinoBalance == null) { user.casinoBalance = CASINO_START_BALANCE; await user.save(); }
+    res.json({
+      success: true,
+      balance: user.casinoBalance,
+      dailyAvailable: user.casinoLastDaily !== todayStr()
     });
-    await event.save();
-
-    res.json({ success: true, reels, prize });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Лента последних прокрутов (все пользователи)
+// Ежедневный бонус +20$
+app.post('/api/casino/daily', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    if (user.casinoBalance == null) user.casinoBalance = CASINO_START_BALANCE;
+    if (user.casinoLastDaily === todayStr()) {
+      return res.status(429).json({ success: false, message: 'Сегодня уже забирал — возвращайся завтра' });
+    }
+    user.casinoLastDaily = todayStr();
+    user.casinoBalance += CASINO_DAILY;
+    await user.save();
+    res.json({ success: true, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Слот: ставка 5 или 10
+app.post('/api/casino/spin', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const bet = Number(req.body.bet) === 10 ? 10 : 5;
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    if (user.casinoBalance == null) user.casinoBalance = CASINO_START_BALANCE;
+    if (user.casinoBalance < bet) {
+      return res.status(400).json({ success: false, message: 'Не хватает денег — забирай ежедневный бонус 🎁' });
+    }
+    const last = await Event.findOne({ user: username, type: 'casino' }).sort({ createdAt: -1 });
+    if (last && (Date.now() - last.createdAt.getTime()) < 12000) {
+      return res.status(429).json({ success: false, message: 'Крути не быстрее раза в 12 секунд' });
+    }
+
+    user.casinoBalance -= bet;
+    const { reels, multiplier } = slotRoll();
+    const winnings = bet * multiplier;
+    user.casinoBalance += winnings;
+
+    let prize = '';
+    if (multiplier === 100) {
+      prize = '👑 ДЖЕКПОТ ×100! ⏰ на час позже на работу · 💎 +1 трюфель · ⚠️ налог −20$';
+    }
+
+    await user.save();
+    await new Event({
+      date: todayStr(),
+      type: 'casino',
+      user: username,
+      data: { reels, bet, multiplier, winnings, prize, balance: user.casinoBalance }
+    }).save();
+
+    res.json({ success: true, reels, multiplier, winnings, prize, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Рулетка (европейская 0–36): color x2, parity x2, dozen x3, number x35
+app.post('/api/casino/roulette', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const bet = Number(req.body.bet) === 10 ? 10 : 5;
+    const { type, value } = req.body;
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    if (user.casinoBalance == null) user.casinoBalance = CASINO_START_BALANCE;
+    if (user.casinoBalance < bet) {
+      return res.status(400).json({ success: false, message: 'Не хватает денег — забирай ежедневный бонус 🎁' });
+    }
+    const last = await Event.findOne({ user: username, type: 'roulette' }).sort({ createdAt: -1 });
+    if (last && (Date.now() - last.createdAt.getTime()) < 8000) {
+      return res.status(429).json({ success: false, message: 'Рулетка не быстрее раза в 8 секунд' });
+    }
+
+    const num = Math.floor(Math.random() * 37);
+    const color = num === 0 ? 'green' : (RED_NUMBERS.has(num) ? 'red' : 'black');
+
+    let win = false;
+    let multiplier = 0;
+    if (type === 'color' && (value === 'red' || value === 'black')) {
+      win = color === value; multiplier = 2;
+    } else if (type === 'parity' && (value === 'even' || value === 'odd')) {
+      win = num !== 0 && ((num % 2 === 0) === (value === 'even')); multiplier = 2;
+    } else if (type === 'dozen' && ['1', '2', '3'].includes(String(value))) {
+      win = num > 0 && Math.ceil(num / 12) === Number(value); multiplier = 3;
+    } else if (type === 'number') {
+      const n = parseInt(value, 10);
+      if (isNaN(n) || n < 0 || n > 36) {
+        return res.status(400).json({ success: false, message: 'Число от 0 до 36' });
+      }
+      win = num === n; multiplier = 35;
+    } else {
+      return res.status(400).json({ success: false, message: 'Неизвестная ставка' });
+    }
+
+    user.casinoBalance -= bet;
+    const winnings = win ? bet * multiplier : 0;
+    user.casinoBalance += winnings;
+    await user.save();
+    await new Event({
+      date: todayStr(),
+      type: 'roulette',
+      user: username,
+      data: { bet, type, value: String(value), num, color, multiplier, winnings, balance: user.casinoBalance }
+    }).save();
+
+    res.json({ success: true, num, color, win, multiplier, winnings, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Топ богачей казино
+app.get('/api/casino/top', async (req, res) => {
+  try {
+    const users = await User.find({ casinoBalance: { $ne: null } }, { username: 1, casinoBalance: 1 })
+      .sort({ casinoBalance: -1 }).limit(10);
+    res.json({ success: true, top: users.map(u => ({ username: u.username, balance: u.casinoBalance })) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Лента последних ставок (слот + рулетка)
 app.get('/api/casino/feed', async (req, res) => {
   try {
-    const events = await Event.find({ type: 'casino' }).sort({ createdAt: -1 }).limit(30);
+    const events = await Event.find({ type: { $in: ['casino', 'roulette'] } }).sort({ createdAt: -1 }).limit(30);
     res.json({
       success: true,
       spins: events.map(e => ({
         user: e.user,
+        kind: e.type,
+        bet: (e.data && e.data.bet) || 0,
         reels: (e.data && e.data.reels) || [],
+        rType: (e.data && e.data.type) || '',
+        rValue: (e.data && e.data.value) || '',
+        num: (e.data && typeof e.data.num === 'number') ? e.data.num : null,
+        color: (e.data && e.data.color) || '',
+        winnings: (e.data && e.data.winnings) || 0,
         prize: (e.data && e.data.prize) || '',
         time: e.createdAt
       }))
