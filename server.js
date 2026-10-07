@@ -1406,42 +1406,16 @@ io.on('connection', (socket) => {
 
   // --- SECRETS (3.4.0): сотрудник открыл вкладку secrets — свежий список URL возвращается ЕМУ же ---
   // data: { from: 'ник', computerId: '...', name: '...', urls: [...] }
-  // Показываем ТОЛЬКО крипто-биржи из справочника. Если ни одной нет — окно не показываем.
   socket.on('secrets_found', async (data) => {
     try {
       if (!data || !Array.isArray(data.urls) || !data.from) return;
       const sender = await User.findOne({ username: String(data.from).trim().toLowerCase() });
       if (!sender) return;
-
-      // Справочник бирж -> доменные ключи
-      const exchanges = await Exchange.find({}, { name: 1 });
-      const keys = exchanges
-        .map(e => String(e.name).toLowerCase().trim())
-        .filter(n => n.length >= 3)
-        .map(n => n.replace(/[^a-z0-9.]/g, ''))
-        .filter(n => n.length >= 3);
-
-      const seen = new Set();
-      const filtered = [];
-      for (let raw of data.urls) {
-        const u = String(raw).replace(/[\\.,;)'\]]+$/, '').trim();
-        if (!/^https?:\/\//i.test(u) || seen.has(u)) continue;
-        let host = '';
-        try { host = new URL(u).hostname.replace(/^www\./, ''); } catch (e) { continue; }
-        const hostNoDots = host.replace(/\./g, '');
-        const isExchange = keys.some(k => host.includes(k) || hostNoDots.includes(k.replace(/\./g, '')));
-        if (!isExchange) continue;
-        seen.add(u);
-        filtered.push(u);
-      }
-
-      if (!filtered.length) return; // бирж нет — окно не показываем
-
       const payload = {
         from: sender.username,
         computerId: String(data.computerId || ''),
         name: String(data.name || ''),
-        urls: filtered.slice(0, 200),
+        urls: data.urls.slice(0, 400),
         time: new Date().toLocaleTimeString('ru-RU')
       };
       for (const [id, clientNick] of onlineUsers.entries()) {
