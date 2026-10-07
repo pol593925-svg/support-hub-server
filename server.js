@@ -2189,4 +2189,369 @@ server.listen(PORT, () => {
   console.log(`Сервер Support Hub v3 запущен на порту ${PORT}`);
   // Краш-игра: первый раунд через 8 сек после старта
   setTimeout(startCrashRound, 8000);
+  // Морской бой: возврат ставок в зависших играх (перезапуск сервера)
+  (async () => {
+    try {
+      const stuck = await Battleship.find({ phase: { $in: ['placement', 'battle'] } });
+      for (const g of stuck) {
+        for (const p of [g.playerA, g.playerB]) {
+          await User.updateOne({ username: p }, { $inc: { casinoBalance: g.bet } });
+        }
+        g.phase = 'refunded';
+        await g.save();
+      }
+      if (stuck.length) console.log('Морской бой: возвращено ставок в играх —', stuck.length);
+    } catch (e) { console.error('Возврат МБ:', e.message); }
+  })();
+});
+
+// ==================== 3.8.0: МОРСКОЙ БОЙ ====================
+
+const BS_SHIPS = [4, 3, 3, 2, 2, 2, 1, 1, 1, 1]; // палубы кораблей
+const BS_PLACE_MS = 120000;  // на расстановку
+const BS_SHOT_MS = 30000;    // на выстрел
+
+const bsSchema = new mongoose.Schema({
+  playerA: { type: String, lowercase: true },
+  playerB: { type: String, lowercase: true },
+  bet: { type: Number, default: 0 },
+  phase: { type: String, default: 'placement' }, // placement | battle | done | declined | refunded
+  shipsA: { type: Array, default: [] },   // [[{x,y}...], ...]
+  shipsB: { type: Array, default: [] },
+  shotsA: { type: Array, default: [] },   // [{x,y,result}] выстрелы A по B
+  shotsB: { type: Array, default: [] },
+  turn: { type: String, default: '' },
+  winner: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now }
+});
+const Battleship = mongoose.model('Battleship', bsSchema);
+
+const bsChallenges = new Map(); // id -> {id, from, to, bet}
+const bsTimers = new Map();     // gameId -> {placeA, placeB, shot}
+let bsSeq = 1;
+
+// Валидация расстановки: классические правила (корабли не касаются)
+function bsValidateShips(ships) {
+  if (!Array.isArray(ships) || ships.length !== BS_SHIPS.length) return null;
+  const cellOwner = new Map();
+  for (let i = 0; i < ships.length; i++) {
+    const cells = ships[i];
+    if (!Array.isArray(cells) || cells.length !== BS_SHIPS[i]) return null;
+    const xs = cells.map(c => c.x), ys = cells.map(c => c.y);
+    if (new Set(xs).size !== 1 && new Set(ys).size !== 1) return null; // прямо по линии
+    const sorted = cells.slice().sort((a, b) => (a.x - b.x) || (a.y - b.y));
+    for (let j = 1; j < sorted.length; j++) {
+      if (Math.abs(sorted[j].x - sorted[j - 1].x) + Math.abs(sorted[j].y - sorted[j - 1].y) !== 1) return null;
+    }
+    for (const c of cells) {
+      if (!Number.isInteger(c.x) || !Number.isInteger(c.y) || c.x < 0 || c.x > 9 || c.y < 0 || c.y > 9) return null;
+      const k = c.x + ',' + c.y;
+      if (cellOwner.has(k)) return null;
+      cellOwner.set(k, i);
+    }
+  }
+  for (const [k, owner] of cellOwner) {
+    const [x, y] = k.split(',').map(Number);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      if (!dx && !dy) continue;
+      const nk = (x + dx) + ',' + (y + dy);
+      if (cellOwner.has(nk) && cellOwner.get(nk) !== owner) return null;
+    }
+  }
+  return BS_SHIPS.map((_, i) => ships[i].map(c => ({ x: c.x, y: c.y })));
+}
+
+// Случайная расстановка
+function bsRandomShips() {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    const occupied = new Set();
+    const ships = [];
+    let ok = true;
+    for (const len of BS_SHIPS) {
+      let placed = false;
+      for (let t = 0; t < 150; t++) {
+        const horiz = Math.random() < 0.5;
+        const x = Math.floor(Math.random() * (horiz ? 11 - len : 10));
+        const y = Math.floor(Math.random() * (horiz ? 10 : 11 - len));
+        const cells = [];
+        for (let i = 0; i < len; i++) cells.push({ x: x + (horiz ? i : 0), y: y + (horiz ? 0 : i) });
+        let free = true;
+        for (const c of cells) {
+          for (let dx = -1; dx <= 1 && free; dx++) for (let dy = -1; dy <= 1; dy++) {
+            if (occupied.has((c.x + dx) + ',' + (c.y + dy))) { free = false; break; }
+          }
+        }
+        if (free) {
+          cells.forEach(c => occupied.add(c.x + ',' + c.y));
+          ships.push(cells);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) { ok = false; break; }
+    }
+    if (ok) return ships;
+  }
+  return null;
+}
+
+// Вид игрока (без чужих кораблей)
+function bsView(g, username) {
+  const me = g.playerA === username ? 'A' : 'B';
+  const opp = me === 'A' ? 'B' : 'A';
+  const myShips = g['ships' + me] || [];
+  const oppShots = g['shots' + opp] || [];
+  const myShots = g['shots' + me] || [];
+  const hitOnMe = new Set(oppShots.filter(s => s.result === 'hit').map(s => s.x + ',' + s.y));
+  const myHit = new Set(myShots.filter(s => s.result === 'hit').map(s => s.x + ',' + s.y));
+  const oppShips = g['ships' + opp] || [];
+  const sunkShips = oppShips.filter(ship => ship.every(c => myHit.has(c.x + ',' + c.y)));
+  return {
+    id: String(g._id),
+    phase: g.phase,
+    bet: g.bet,
+    opponent: me === 'A' ? g.playerB : g.playerA,
+    myTurn: g.turn === username && g.phase === 'battle',
+    winner: g.winner,
+    myShips: myShips.map(ship => ship.map(c => ({ ...c, hit: hitOnMe.has(c.x + ',' + c.y) }))),
+    incoming: oppShots,
+    myShots: myShots,
+    sunkShips: sunkShips,
+    serverTime: Date.now()
+  };
+}
+
+function bsPushUpdate(g) {
+  emitToUser(g.playerA, 'bs_update', bsView(g, g.playerA));
+  emitToUser(g.playerB, 'bs_update', bsView(g, g.playerB));
+}
+
+function bsClearTimers(id) {
+  const t = bsTimers.get(id);
+  if (t) {
+    if (t.placeA) clearTimeout(t.placeA);
+    if (t.placeB) clearTimeout(t.placeB);
+    if (t.shot) clearTimeout(t.shot);
+    bsTimers.delete(id);
+  }
+}
+
+// Таймер выстрела: не выстрелил за 30 сек — случайный выстрел
+function bsArmShotTimer(g) {
+  const t = bsTimers.get(String(g._id)) || {};
+  if (t.shot) clearTimeout(t.shot);
+  t.shot = setTimeout(async () => {
+    try {
+      const cur = await Battleship.findById(g._id);
+      if (!cur || cur.phase !== 'battle' || !cur.turn) return;
+      const me = cur.playerA === cur.turn ? 'A' : 'B';
+      const shots = cur['shots' + me];
+      const taken = new Set(shots.map(s => s.x + ',' + s.y));
+      const free = [];
+      for (let x = 0; x < 10; x++) for (let y = 0; y < 10; y++) {
+        if (!taken.has(x + ',' + y)) free.push({ x, y });
+      }
+      if (!free.length) return;
+      const cell = free[Math.floor(Math.random() * free.length)];
+      await bsDoShot(cur, cur.turn, cell.x, cell.y);
+    } catch (e) { console.error('МБ авто-выстрел:', e.message); }
+  }, BS_SHOT_MS);
+  bsTimers.set(String(g._id), t);
+}
+
+// Выстрел: возвращает true если игра закончена
+async function bsDoShot(g, shooter, x, y) {
+  const me = g.playerA === shooter ? 'A' : 'B';
+  const opp = me === 'A' ? 'B' : 'A';
+  const shots = g['shots' + me];
+  if (shots.some(s => s.x === x && s.y === y)) return false;
+
+  const oppShips = g['ships' + opp];
+  const isHit = oppShips.some(ship => ship.some(c => c.x === x && c.y === y));
+  shots.push({ x, y, result: isHit ? 'hit' : 'miss' });
+
+  let gameOver = false;
+  if (isHit) {
+    const hitSet = new Set(shots.filter(s => s.result === 'hit').map(s => s.x + ',' + s.y));
+    gameOver = oppShips.every(ship => ship.every(c => hitSet.has(c.x + ',' + c.y)));
+  }
+
+  if (gameOver) {
+    g.phase = 'done';
+    g.winner = shooter;
+    const user = await User.findOne({ username: shooter });
+    if (user) {
+      user.casinoBalance = (user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance) + g.bet * 2;
+      await user.save();
+    }
+  } else {
+    g.turn = isHit ? shooter : (me === 'A' ? g.playerB : g.playerA);
+  }
+  await g.save();
+  bsPushUpdate(g);
+  if (!gameOver) bsArmShotTimer(g);
+  else bsClearTimers(String(g._id));
+  return gameOver;
+}
+
+// Вызов на морской бой
+app.post('/api/battleship/challenge', async (req, res) => {
+  try {
+    const from = (req.body.from || '').trim().toLowerCase();
+    const to = (req.body.to || '').trim().toLowerCase();
+    const bet = Math.floor(Number(req.body.bet) || 0);
+    if (!from || !to) return res.status(400).json({ success: false, message: 'Укажи соперника' });
+    if (from === to) return res.status(400).json({ success: false, message: 'Сам с собой скучно' });
+    if (bet < 5 || bet > 100) return res.status(400).json({ success: false, message: 'Ставка: 5–100$' });
+
+    const fromUser = await User.findOne({ username: from });
+    const toUser = await User.findOne({ username: to });
+    if (!toUser) return res.status(404).json({ success: false, message: 'Такого ника нет' });
+    const fromBal = fromUser.casinoBalance == null ? CASINO_START_BALANCE : fromUser.casinoBalance;
+    const toBal = toUser.casinoBalance == null ? CASINO_START_BALANCE : toUser.casinoBalance;
+    if (fromBal < bet) return res.status(400).json({ success: false, message: `У тебя нет ${bet}$` });
+    if (toBal < bet) return res.status(400).json({ success: false, message: `У ${to} нет ${bet}$` });
+
+    const id = 'b' + (bsSeq++) + '_' + Date.now();
+    bsChallenges.set(id, { id, from, to, bet });
+    emitToUser(to, 'bs_challenge', { id, from, bet });
+    setTimeout(() => {
+      if (bsChallenges.has(id)) {
+        bsChallenges.delete(id);
+        emitToUser(from, 'bs_update', { phase: 'expired', opponent: to });
+      }
+    }, 90000);
+
+    res.json({ success: true, id });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Ответ на вызов
+app.post('/api/battleship/respond', async (req, res) => {
+  try {
+    const id = String(req.body.id || '');
+    const username = (req.body.username || '').trim().toLowerCase();
+    const ch = bsChallenges.get(id);
+    if (!ch) return res.status(404).json({ success: false, message: 'Вызов протух' });
+    if (ch.to !== username) return res.status(403).json({ success: false, message: 'Не твой вызов' });
+    bsChallenges.delete(id);
+
+    if (!req.body.accept) {
+      emitToUser(ch.from, 'bs_update', { phase: 'declined', opponent: ch.to });
+      return res.json({ success: true });
+    }
+
+    const fromUser = await User.findOne({ username: ch.from });
+    const toUser = await User.findOne({ username: ch.to });
+    fromUser.casinoBalance = (fromUser.casinoBalance == null ? CASINO_START_BALANCE : fromUser.casinoBalance) - ch.bet;
+    toUser.casinoBalance = (toUser.casinoBalance == null ? CASINO_START_BALANCE : toUser.casinoBalance) - ch.bet;
+    await fromUser.save();
+    await toUser.save();
+
+    const g = new Battleship({ playerA: ch.from, playerB: ch.to, bet: ch.bet, phase: 'placement' });
+    await g.save();
+
+    // Таймеры расстановки
+    const timers = {};
+    for (const [side, nick] of [['placeA', ch.from], ['placeB', ch.to]]) {
+      timers[side] = setTimeout(async () => {
+        try {
+          const cur = await Battleship.findById(g._id);
+          if (!cur || cur.phase !== 'placement') return;
+          const s = side === 'placeA' ? 'A' : 'B';
+          if (!cur['ships' + s].length) {
+            const auto = bsRandomShips();
+            if (auto) {
+              cur['ships' + s] = auto;
+              await cur.save();
+              bsMaybeStartBattle(cur);
+            }
+          }
+        } catch (e) { console.error('МБ авто-расстановка:', e.message); }
+      }, BS_PLACE_MS);
+    }
+    bsTimers.set(String(g._id), timers);
+
+    emitToUser(ch.from, 'bs_update', bsView(g, ch.from));
+    emitToUser(ch.to, 'bs_update', bsView(g, ch.to));
+    res.json({ success: true, gameId: String(g._id) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Старт боя, когда оба расставили
+async function bsMaybeStartBattle(g) {
+  const fresh = await Battleship.findById(g._id);
+  if (!fresh || fresh.phase !== 'placement') return;
+  if (fresh.shipsA.length && fresh.shipsB.length) {
+    fresh.phase = 'battle';
+    fresh.turn = Math.random() < 0.5 ? fresh.playerA : fresh.playerB;
+    await fresh.save();
+    const t = bsTimers.get(String(g._id)) || {};
+    if (t.placeA) clearTimeout(t.placeA);
+    if (t.placeB) clearTimeout(t.placeB);
+    bsTimers.set(String(g._id), t);
+    bsPushUpdate(fresh);
+    bsArmShotTimer(fresh);
+  }
+}
+
+// Расстановка кораблей
+app.post('/api/battleship/place', async (req, res) => {
+  try {
+    const id = String(req.body.id || '');
+    const username = (req.body.username || '').trim().toLowerCase();
+    const g = await Battleship.findById(id);
+    if (!g || g.phase !== 'placement') return res.status(404).json({ success: false, message: 'Игра не найдена' });
+    const me = g.playerA === username ? 'A' : 'B';
+    if (g.playerA !== username && g.playerB !== username) return res.status(403).json({ success: false, message: 'Не твоя игра' });
+    if (g['ships' + me].length) return res.status(400).json({ success: false, message: 'Уже расставлено' });
+
+    const ships = bsValidateShips(req.body.ships);
+    if (!ships) return res.status(400).json({ success: false, message: 'Расстановка невалидна: корабли не должны касаться' });
+
+    g['ships' + me] = ships;
+    await g.save();
+    await bsMaybeStartBattle(g);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Состояние игры для игрока
+app.get('/api/battleship/state', async (req, res) => {
+  try {
+    const id = String(req.query.id || '');
+    const username = (req.query.username || '').trim().toLowerCase();
+    const g = await Battleship.findById(id);
+    if (!g) return res.status(404).json({ success: false, message: 'Игра не найдена' });
+    if (g.playerA !== username && g.playerB !== username) return res.status(403).json({ success: false, message: 'Не твоя игра' });
+    res.json({ success: true, game: bsView(g, username) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Выстрел
+app.post('/api/battleship/shot', async (req, res) => {
+  try {
+    const id = String(req.body.id || '');
+    const username = (req.body.username || '').trim().toLowerCase();
+    const x = Math.floor(Number(req.body.x));
+    const y = Math.floor(Number(req.body.y));
+    const g = await Battleship.findById(id);
+    if (!g || g.phase !== 'battle') return res.status(400).json({ success: false, message: 'Бой не идёт' });
+    if (g.turn !== username) return res.status(400).json({ success: false, message: 'Не твой ход' });
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 9 || y < 0 || y > 9) {
+      return res.status(400).json({ success: false, message: 'Мимо поля' });
+    }
+    await bsDoShot(g, username, x, y);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
