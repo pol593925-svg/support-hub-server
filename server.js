@@ -101,7 +101,8 @@ const FeedItem = mongoose.model('FeedItem', feedItemSchema);
 const messageSchema = new mongoose.Schema({
   from: { type: String, required: true, lowercase: true },
   to: { type: String, required: true, lowercase: true },
-  text: { type: String, required: true },
+  text: { type: String, default: '' },
+  voice: { type: String, default: '' }, // base64 data URL аудио (3.6.0)
   read: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 });
@@ -1087,7 +1088,7 @@ app.get('/api/messages/inbox', async (req, res) => {
       if (!dialogs[other]) {
         dialogs[other] = {
           with: other,
-          lastText: m.text,
+          lastText: (m.voice && !m.text) ? '🎤 Голосовое сообщение' : m.text,
           lastTime: m.createdAt,
           lastFrom: m.from,
           unread: 0
@@ -1117,17 +1118,19 @@ app.get('/api/messages', async (req, res) => {
   }
 });
 
-// Отправить личное сообщение
+// Отправить личное сообщение (текст и/или голосовое)
 app.post('/api/messages', async (req, res) => {
   try {
     const from = (req.body.from || '').trim().toLowerCase();
     const to = (req.body.to || '').trim().toLowerCase();
     const text = String(req.body.text || '').trim().slice(0, 1000);
-    if (!from || !to || !text) return res.status(400).json({ success: false, message: 'Пустое сообщение' });
+    const voice = String(req.body.voice || '').slice(0, 14_000_000); // data URL аудио
+    if (!from || !to) return res.status(400).json({ success: false, message: 'Укажите отправителя и получателя' });
+    if (!text && !voice) return res.status(400).json({ success: false, message: 'Пустое сообщение' });
     if (from === to) return res.status(400).json({ success: false, message: 'Себе писать нельзя' });
     const target = await User.findOne({ username: to });
     if (!target) return res.status(404).json({ success: false, message: 'Получатель не найден' });
-    const msg = new Message({ from, to, text });
+    const msg = new Message({ from, to, text, voice });
     await msg.save();
     res.json({ success: true, message: msg });
   } catch (err) {
@@ -1425,6 +1428,22 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Запрос скрина с экрана сотрудника (админ/ТЛ) — 3.6.0
+  socket.on('admin_screenshot_request', async (data) => {
+    try {
+      if (!data || !data.targetNick) return;
+      const admin = await User.findOne({ username: String(data.from || '').trim().toLowerCase() });
+      if (!admin || admin.role !== 'admin') return; // только админ
+      for (const [id, clientNick] of onlineUsers.entries()) {
+        if (clientNick && clientNick.toLowerCase() === String(data.targetNick).toLowerCase()) {
+          io.to(id).emit('screenshot_request', { by: admin.username });
+        }
+      }
+    } catch (err) {
+      console.error('Ошибка запроса скрина:', err.message);
+    }
+  });
+
   // Отключение пользователя
   socket.on('disconnect', () => {
     console.log('Пользователь отключился:', socket.id);
@@ -1625,6 +1644,178 @@ app.get('/api/casino/feed', async (req, res) => {
         prize: (e.data && e.data.prize) || '',
         time: e.createdAt
       }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== 3.6.0: МАГАЗИН ПРИЗОВ ====================
+
+const SHOP_ITEMS = {
+  sleep_hour:  { name: '⏰ +1 час ко сну',   price: 2000 },
+  fine_cancel: { name: '🛡 Отмена штрафа',   price: 1000 },
+  top_geo_log: { name: '🌍 1 лог топ гео',   price: 100 }
+};
+
+const purchaseSchema = new mongoose.Schema({
+  username: { type: String, required: true, lowercase: true },
+  item: { type: String, required: true },
+  price: { type: Number, required: true },
+  done: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
+});
+const Purchase = mongoose.model('Purchase', purchaseSchema);
+
+// Список призов
+app.get('/api/shop/items', async (req, res) => {
+  res.json({
+    success: true,
+    items: Object.entries(SHOP_ITEMS).map(([id, it]) => ({ id, name: it.name, price: it.price }))
+  });
+});
+
+// Купить приз: списываем бабки, заявка уходит админам на выполнение
+app.post('/api/shop/buy', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const itemId = String(req.body.item || '');
+    const item = SHOP_ITEMS[itemId];
+    if (!item) return res.status(400).json({ success: false, message: 'Такого приза нет' });
+
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Игрок не найден' });
+    const balance = (user.casinoBalance === null || user.casinoBalance === undefined) ? 500 : user.casinoBalance;
+    if (balance < item.price) {
+      return res.status(400).json({ success: false, message: `Не хватает бабок: нужно ${item.price}$, у тебя ${balance}$` });
+    }
+
+    user.casinoBalance = balance - item.price;
+    await user.save();
+
+    const purchase = new Purchase({ username, item: itemId, price: item.price });
+    await purchase.save();
+
+    // Живое оповещение админам о покупке
+    io.emit('shop_purchase', { user: username, item: item.name, price: item.price, id: String(purchase._id) });
+
+    res.json({ success: true, balance: user.casinoBalance, item: item.name });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Заявки на покупки (админ)
+app.get('/api/admin/purchases', verifyAdmin, async (req, res) => {
+  try {
+    const purchases = await Purchase.find().sort({ createdAt: -1 }).limit(100);
+    res.json({
+      success: true,
+      purchases: purchases.map(p => ({
+        id: String(p._id), username: p.username,
+        item: (SHOP_ITEMS[p.item] && SHOP_ITEMS[p.item].name) || p.item,
+        price: p.price, done: p.done, time: p.createdAt
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Отметить покупку выполненной (админ)
+app.post('/api/admin/purchases/done', verifyAdmin, async (req, res) => {
+  try {
+    const p = await Purchase.findById(req.body.id);
+    if (!p) return res.status(404).json({ success: false, message: 'Заявка не найдена' });
+    p.done = true;
+    await p.save();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== 3.6.0: ТОПЫ (рез серчи / защеканы) ====================
+
+const topsSchema = new mongoose.Schema({
+  key: { type: String, default: 'main' },
+  searchers: { type: [String], default: [] },
+  checkers: { type: [String], default: [] }
+});
+const Tops = mongoose.model('Tops', topsSchema);
+
+// Публично: оба топа
+app.get('/api/tops', async (req, res) => {
+  try {
+    const t = await Tops.findOne({ key: 'main' }) || { searchers: [], checkers: [] };
+    res.json({ success: true, searchers: t.searchers, checkers: t.checkers });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Задать топ (админ): list = 'searchers' | 'checkers', usernames = [ник, ...]
+app.post('/api/admin/tops', verifyAdmin, async (req, res) => {
+  try {
+    const list = req.body.list;
+    if (!['searchers', 'checkers'].includes(list)) {
+      return res.status(400).json({ success: false, message: 'list должен быть searchers или checkers' });
+    }
+    const usernames = (Array.isArray(req.body.usernames) ? req.body.usernames : [])
+      .map(u => String(u).trim().toLowerCase()).filter(Boolean).slice(0, 50);
+
+    let t = await Tops.findOne({ key: 'main' });
+    if (!t) { t = new Tops({ key: 'main' }); }
+    t[list] = usernames;
+    await t.save();
+    res.json({ success: true, searchers: t.searchers, checkers: t.checkers });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== 3.6.0: СКРИНЫ ПО КНОПКЕ ====================
+
+const screenshotSchema = new mongoose.Schema({
+  username: { type: String, required: true, lowercase: true },
+  image: { type: String, required: true }, // base64 data URL JPEG
+  createdAt: { type: Date, default: Date.now }
+});
+const Screenshot = mongoose.model('Screenshot', screenshotSchema);
+
+// Сотрудник загружает скрин (прилетел запрос с админки)
+app.post('/api/screenshot', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const image = String(req.body.image || '');
+    if (!username || !image.startsWith('data:image/')) {
+      return res.status(400).json({ success: false, message: 'Плохой скрин' });
+    }
+    if (image.length > 14_000_000) {
+      return res.status(400).json({ success: false, message: 'Скрин слишком большой' });
+    }
+    await new Screenshot({ username, image }).save();
+    // Храним последние 20 на юзера
+    const mine = await Screenshot.find({ username }).sort({ createdAt: -1 });
+    if (mine.length > 20) {
+      const oldIds = mine.slice(20).map(s => s._id);
+      await Screenshot.deleteMany({ _id: { $in: oldIds } });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Скрины юзера (админ): ?username= — последние 10, без username — последние 30 всех
+app.get('/api/admin/screenshots', verifyAdmin, async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    const filter = username ? { username } : {};
+    const shots = await Screenshot.find(filter).sort({ createdAt: -1 }).limit(username ? 10 : 30);
+    res.json({
+      success: true,
+      screenshots: shots.map(s => ({ id: String(s._id), username: s.username, image: s.image, time: s.createdAt }))
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
