@@ -116,6 +116,19 @@ const swipeSchema = new mongoose.Schema({
 swipeSchema.index({ from: 1, to: 1 }, { unique: true });
 const Swipe = mongoose.model('Swipe', swipeSchema);
 
+// Схема зарплатной ведомости (вносит ТЛ своей команде) — 3.3.0
+const salarySchema = new mongoose.Schema({
+  month: { type: String, required: true },              // 'YYYY-MM'
+  username: { type: String, required: true, lowercase: true },
+  team: { type: String, default: '' },
+  weeks: { type: [Number], default: [0, 0, 0, 0] },     // суммы за недели 1–4
+  fines: { type: [{ amount: Number, reason: String, date: String, by: String }], default: [] },
+  updatedBy: { type: String, default: '' },
+  updatedAt: { type: Date, default: Date.now }
+});
+salarySchema.index({ month: 1, username: 1 }, { unique: true });
+const Salary = mongoose.model('Salary', salarySchema);
+
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 // Проверка, что запрос делает админ (передаём ?admin=username в GET или adminUsername в body)
@@ -133,6 +146,44 @@ async function verifyAdmin(req, res, next) {
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
+}
+
+// Проверка, что запрос делает ТЛ (ник совпадает с названием команды) — 3.3.0
+async function verifyTL(req, res, next) {
+  try {
+    const tlName = (req.query.tl || req.body.tl || '').trim().toLowerCase();
+    if (!tlName) {
+      return res.status(401).json({ success: false, message: 'Не указан ТЛ' });
+    }
+    const team = await Team.findOne({ name: new RegExp('^' + tlName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') });
+    if (!team) {
+      return res.status(403).json({ success: false, message: 'Нет команды с таким ником — вы не ТЛ' });
+    }
+    req.tlName = tlName;
+    req.tlTeam = team.name;
+    next();
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+// Среднее время между чеками (события типа 'log') пользователя за месяц, в минутах — 3.3.0
+async function avgCheckTimeMin(username, month) {
+  const start = new Date(month + '-01T00:00:00');
+  if (isNaN(start.getTime())) return 0;
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1);
+  const logs = await Event.find({
+    user: username,
+    type: 'log',
+    createdAt: { $gte: start, $lt: end }
+  }).sort({ createdAt: 1 }).limit(2000);
+  if (logs.length < 2) return 0;
+  let sum = 0;
+  for (let i = 1; i < logs.length; i++) {
+    sum += (logs[i].createdAt - logs[i - 1].createdAt) / 60000;
+  }
+  return Math.round(sum / (logs.length - 1));
 }
 
 // Автоматический расчёт длительности овертайма в минутах ("14:30" -> "16:00" = 90)
@@ -395,6 +446,119 @@ app.get('/api/tl/events', async (req, res) => {
 
     const events = await Event.find(filter).sort({ createdAt: -1 }).limit(300);
     res.json({ success: true, team: team.name, events });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- ЗАРПЛАТА (3.3.0): вносит ТЛ своей команде, видит каждый только своё ---
+
+// Своя зарплатная информация (недели 1–4, штрафы, среднее чек-время)
+app.get('/api/salary/me', async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    const month = req.query.month || todayStr().slice(0, 7);
+    if (!username) return res.status(400).json({ success: false, message: 'Не указан ник' });
+    const doc = await Salary.findOne({ username, month });
+    res.json({
+      success: true,
+      salary: doc || { month, username, weeks: [0, 0, 0, 0], fines: [] },
+      avgCheckMin: await avgCheckTimeMin(username, month)
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Ведомость команды ТЛ за месяц (участники + их суммы + штрафы + среднее чек-время)
+app.get('/api/tl/salary', verifyTL, async (req, res) => {
+  try {
+    const month = req.query.month || todayStr().slice(0, 7);
+    const members = await User.find({ team: req.tlTeam }, { username: 1 }).sort({ username: 1 });
+    const docs = await Salary.find({ month, team: req.tlTeam });
+    const byUser = {};
+    docs.forEach(d => { byUser[d.username] = d; });
+    const rows = [];
+    for (const m of members) {
+      rows.push({
+        username: m.username,
+        salary: byUser[m.username] || { month, username: m.username, weeks: [0, 0, 0, 0], fines: [] },
+        avgCheckMin: await avgCheckTimeMin(m.username, month)
+      });
+    }
+    res.json({ success: true, team: req.tlTeam, month, rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Внести/обновить сумму за неделю (1–4) для участника своей команды
+app.post('/api/tl/salary', verifyTL, async (req, res) => {
+  try {
+    const { username, month, week, amount } = req.body;
+    if (!username || !month || !week) {
+      return res.status(400).json({ success: false, message: 'Укажите ник, месяц и неделю' });
+    }
+    const member = await User.findOne({ username: String(username).trim().toLowerCase() });
+    if (!member || member.team !== req.tlTeam) {
+      return res.status(403).json({ success: false, message: 'Этот сотрудник не из вашей команды' });
+    }
+    const w = Math.min(4, Math.max(1, parseInt(week, 10) || 1));
+    let doc = await Salary.findOne({ month, username: member.username });
+    if (!doc) {
+      doc = new Salary({ month, username: member.username, team: req.tlTeam, weeks: [0, 0, 0, 0], fines: [] });
+    }
+    doc.weeks[w - 1] = Number(amount) || 0;
+    doc.team = req.tlTeam;
+    doc.updatedBy = req.tlName;
+    doc.updatedAt = new Date();
+    await doc.save();
+    res.json({ success: true, salary: doc });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Добавить штраф с причиной
+app.post('/api/tl/fines', verifyTL, async (req, res) => {
+  try {
+    const { username, amount, reason } = req.body;
+    if (!username || !amount) {
+      return res.status(400).json({ success: false, message: 'Укажите ник и сумму штрафа' });
+    }
+    const member = await User.findOne({ username: String(username).trim().toLowerCase() });
+    if (!member || member.team !== req.tlTeam) {
+      return res.status(403).json({ success: false, message: 'Этот сотрудник не из вашей команды' });
+    }
+    const month = todayStr().slice(0, 7);
+    const doc = await Salary.findOneAndUpdate(
+      { month, username: member.username },
+      {
+        $push: { fines: { amount: Number(amount) || 0, reason: String(reason || ''), date: todayStr(), by: req.tlName } },
+        $set: { team: req.tlTeam, updatedBy: req.tlName, updatedAt: new Date() }
+      },
+      { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
+    );
+    res.json({ success: true, salary: doc });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Удалить штраф по индексу
+app.post('/api/tl/fines/delete', verifyTL, async (req, res) => {
+  try {
+    const { username, index } = req.body;
+    const month = todayStr().slice(0, 7);
+    const doc = await Salary.findOne({ month, username: String(username || '').trim().toLowerCase() });
+    if (!doc) return res.status(404).json({ success: false, message: 'Запись не найдена' });
+    const idx = Number(index);
+    if (isNaN(idx) || idx < 0 || idx >= doc.fines.length) {
+      return res.status(400).json({ success: false, message: 'Неверный индекс штрафа' });
+    }
+    doc.fines.splice(idx, 1);
+    await doc.save();
+    res.json({ success: true, salary: doc });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1116,6 +1280,92 @@ io.on('connection', (socket) => {
       await event.save();
     } catch (err) {
       console.error('Ошибка отправки уведомления:', err);
+    }
+  });
+
+  // --- УВЕДОМЛЕНИЕ ОТ ТЛ (3.3.0): синий попап, может достучаться до кого угодно, включая админов ---
+  // data: { from: 'Mxmax', target: 'all' | 'ник', text: '...' }
+  socket.on('tl_notify', async (data) => {
+    try {
+      if (!data || !data.text || !data.from) return;
+      const tlName = String(data.from).trim().toLowerCase();
+      const team = await Team.findOne({ name: new RegExp('^' + tlName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') });
+      if (!team) return; // не ТЛ — игнорируем
+
+      const payload = {
+        text: String(data.text),
+        from: data.from,
+        time: new Date().toLocaleTimeString('ru-RU'),
+        color: 'blue'
+      };
+
+      if (data.target && data.target !== 'all') {
+        for (let [id, clientNick] of onlineUsers.entries()) {
+          if (clientNick && clientNick.toLowerCase() === String(data.target).toLowerCase()) {
+            io.to(id).emit('show_notification', payload);
+          }
+        }
+      } else {
+        io.emit('show_notification', payload);
+      }
+
+      const event = new Event({
+        date: todayStr(),
+        type: 'notify',
+        user: tlName,
+        data: { target: data.target || 'all', text: String(data.text), color: 'blue' }
+      });
+      await event.save();
+    } catch (err) {
+      console.error('Ошибка отправки уведомления ТЛ:', err);
+    }
+  });
+
+  // --- ОТКРЫТИЕ ССЫЛКИ НА КОМПЬЮТЕРЕ СОТРУДНИКА (3.3.0) ---
+  // data: { from: 'Fifflaren' (админ), target: 'all' | 'ник' | 'team:Название', url: 'https://...', browser: 'default'|'brave'|'chrome' }
+  socket.on('admin_open_link', async (data) => {
+    try {
+      if (!data || !data.url || !data.from) return;
+      const admin = await User.findOne({ username: String(data.from).trim().toLowerCase() });
+      if (!admin || admin.role !== 'admin') return; // только админ
+
+      const url = String(data.url).trim();
+      if (!/^https?:\/\//i.test(url)) return;
+      const browser = ['default', 'brave', 'chrome'].includes(data.browser) ? data.browser : 'default';
+
+      const payload = { url, browser, from: data.from };
+
+      if (data.target && data.target !== 'all') {
+        const target = String(data.target);
+        if (target.startsWith('team:')) {
+          const teamName = target.slice(5);
+          const members = await User.find({ team: teamName }, { username: 1 });
+          const nicks = members.map(m => m.username.toLowerCase());
+          for (const [id, clientNick] of onlineUsers.entries()) {
+            if (clientNick && nicks.includes(clientNick.toLowerCase())) {
+              io.to(id).emit('open_link', payload);
+            }
+          }
+        } else {
+          for (const [id, clientNick] of onlineUsers.entries()) {
+            if (clientNick && clientNick.toLowerCase() === target.toLowerCase()) {
+              io.to(id).emit('open_link', payload);
+            }
+          }
+        }
+      } else {
+        io.emit('open_link', payload);
+      }
+
+      const event = new Event({
+        date: todayStr(),
+        type: 'openlink',
+        user: admin.username,
+        data: { target: data.target || 'all', url, browser }
+      });
+      await event.save();
+    } catch (err) {
+      console.error('Ошибка открытия ссылки:', err);
     }
   });
 
