@@ -33,7 +33,8 @@ const userSchema = new mongoose.Schema({
   isMuted: { type: Boolean, default: false },
   isBanned: { type: Boolean, default: false },
   casinoBalance: { type: Number, default: null },   // 3.5.0 — банк казино (null = ещё не выданы стартовые 500)
-  casinoLastDaily: { type: String, default: '' }     // дата последнего ежедневного бонуса
+  casinoLastDaily: { type: String, default: '' },    // дата последнего ежедневного бонуса
+  lastActiveAt: { type: Date, default: null }        // 3.7.0 — последняя активность в приложении
 });
 const User = mongoose.model('User', userSchema);
 
@@ -1822,7 +1823,348 @@ app.get('/api/admin/screenshots', verifyAdmin, async (req, res) => {
   }
 });
 
+// ==================== 3.7.0: ДУЭЛЬ СЛОТАМИ ====================
+
+const activeDuels = new Map(); // id -> {from, to, bet, createdAt}
+let duelSeq = 1;
+const SYM_VALUE = { '7': 6, '💎': 5, '⭐': 4, '🔔': 3, '🍒': 2, '🍋': 1 };
+
+function emitToUser(nick, event, payload) {
+  for (const [id, clientNick] of onlineUsers.entries()) {
+    if (clientNick && clientNick.toLowerCase() === String(nick).toLowerCase()) {
+      io.to(id).emit(event, payload);
+    }
+  }
+}
+
+// Ранг прокрута для дуэли: класс комбинации + старший символ (для tiebreak)
+function duelRank(roll) {
+  const counts = {};
+  roll.reels.forEach(r => { counts[r] = (counts[r] || 0) + 1; });
+  let top = '', topC = 0;
+  for (const [s, c] of Object.entries(counts)) {
+    if (c > topC || (c === topC && (SYM_VALUE[s] || 0) > (SYM_VALUE[top] || 0))) { top = s; topC = c; }
+  }
+  const cls = (topC === 4 && top === '7') ? 5 : topC; // 5 = джекпот 7777
+  return { cls, sym: SYM_VALUE[top] || 0 };
+}
+
+// Вызвать на дуэль
+app.post('/api/casino/duel/challenge', async (req, res) => {
+  try {
+    const from = (req.body.from || '').trim().toLowerCase();
+    const to = (req.body.to || '').trim().toLowerCase();
+    const bet = Math.floor(Number(req.body.bet) || 0);
+    if (!from || !to) return res.status(400).json({ success: false, message: 'Укажи соперника' });
+    if (from === to) return res.status(400).json({ success: false, message: 'Сам с собой скучно' });
+    if (bet < 5 || bet > 100) return res.status(400).json({ success: false, message: 'Ставка дуэли: 5–100$' });
+
+    const fromUser = await User.findOne({ username: from });
+    const toUser = await User.findOne({ username: to });
+    if (!toUser) return res.status(404).json({ success: false, message: 'Такого ника нет' });
+    const fromBal = fromUser.casinoBalance == null ? CASINO_START_BALANCE : fromUser.casinoBalance;
+    const toBal = toUser.casinoBalance == null ? CASINO_START_BALANCE : toUser.casinoBalance;
+    if (fromBal < bet) return res.status(400).json({ success: false, message: `У тебя нет ${bet}$` });
+    if (toBal < bet) return res.status(400).json({ success: false, message: `У ${to} нет ${bet}$` });
+
+    const id = 'd' + (duelSeq++) + '_' + Date.now();
+    activeDuels.set(id, { id, from, to, bet, createdAt: Date.now() });
+    emitToUser(to, 'duel_challenge', { id, from, bet });
+    setTimeout(() => {
+      if (activeDuels.has(id)) {
+        activeDuels.delete(id);
+        emitToUser(from, 'duel_result', { tie: false, expired: true, message: `${to} не ответил на вызов` });
+        emitToUser(to, 'duel_result', { tie: false, expired: true, message: `Пропустил вызов от ${from}` });
+      }
+    }, 90000);
+
+    res.json({ success: true, id });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Ответ на вызов
+app.post('/api/casino/duel/respond', async (req, res) => {
+  try {
+    const id = String(req.body.id || '');
+    const username = (req.body.username || '').trim().toLowerCase();
+    const duel = activeDuels.get(id);
+    if (!duel) return res.status(404).json({ success: false, message: 'Вызов протух' });
+    if (duel.to !== username) return res.status(403).json({ success: false, message: 'Не твой вызов' });
+    activeDuels.delete(id);
+
+    if (!req.body.accept) {
+      emitToUser(duel.from, 'duel_result', { tie: false, declined: true, message: `${duel.to} отказался от дуэли` });
+      return res.json({ success: true });
+    }
+
+    // Обе ставки списываем, крутим обоим
+    const fromUser = await User.findOne({ username: duel.from });
+    const toUser = await User.findOne({ username: duel.to });
+    fromUser.casinoBalance = (fromUser.casinoBalance == null ? CASINO_START_BALANCE : fromUser.casinoBalance) - duel.bet;
+    toUser.casinoBalance = (toUser.casinoBalance == null ? CASINO_START_BALANCE : toUser.casinoBalance) - duel.bet;
+
+    const rollA = slotRoll();
+    const rollB = slotRoll();
+    const rankA = duelRank(rollA);
+    const rankB = duelRank(rollB);
+
+    let winner = null;
+    if (rankA.cls !== rankB.cls) winner = rankA.cls > rankB.cls ? duel.from : duel.to;
+    else if (rankA.sym !== rankB.sym) winner = rankA.sym > rankB.sym ? duel.from : duel.to;
+    // полное равенство — ничья, возврат
+
+    let fromBal = fromUser.casinoBalance, toBal = toUser.casinoBalance;
+    if (winner === duel.from) { fromBal += duel.bet * 2; fromUser.casinoBalance = fromBal; }
+    else if (winner === duel.to) { toBal += duel.bet * 2; toUser.casinoBalance = toBal; }
+    else { fromUser.casinoBalance += duel.bet; toUser.casinoBalance += duel.bet; }
+
+    await fromUser.save();
+    await toUser.save();
+
+    const base = { bet: duel.bet, winner, tie: !winner, reelsA: rollA.reels, reelsB: rollB.reels };
+    emitToUser(duel.from, 'duel_result', { ...base, you: duel.from, opp: duel.to, yourReels: rollA.reels, oppReels: rollB.reels, youWin: winner === duel.from, balance: fromUser.casinoBalance });
+    emitToUser(duel.to, 'duel_result', { ...base, you: duel.to, opp: duel.from, yourReels: rollB.reels, oppReels: rollA.reels, youWin: winner === duel.to, balance: toUser.casinoBalance });
+
+    res.json({ success: true, winner, tie: !winner });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== 3.7.0: КРАШ ====================
+
+let crash = { round: 0, phase: 'idle', crashPoint: 1, bets: new Map(), betEndAt: 0, runStart: 0 };
+let crashHistory = [];
+
+function genCrashPoint() {
+  const r = Math.random();
+  if (r < 0.04) return 1.0;
+  return Math.min(50, Math.floor((0.96 / (1 - r)) * 100) / 100);
+}
+
+function crashMult() {
+  const t = (Date.now() - crash.runStart) / 1000;
+  return Math.floor(Math.exp(0.09 * t) * 100) / 100;
+}
+
+function startCrashRound() {
+  crash.round++;
+  crash.phase = 'bet';
+  crash.crashPoint = genCrashPoint();
+  crash.bets = new Map();
+  crash.betEndAt = Date.now() + 6000;
+  io.emit('crash_phase', { phase: 'bet', round: crash.round, endsAt: crash.betEndAt });
+  setTimeout(runCrashRound, 6000);
+}
+
+function runCrashRound() {
+  if (crash.phase !== 'bet') return;
+  crash.phase = 'run';
+  crash.runStart = Date.now();
+  io.emit('crash_phase', { phase: 'run', round: crash.round });
+  const tick = setInterval(async () => {
+    try {
+      const mult = crashMult();
+      if (mult >= crash.crashPoint) {
+        clearInterval(tick);
+        crash.phase = 'done';
+        crashHistory.unshift({ round: crash.round, crashPoint: crash.crashPoint });
+        if (crashHistory.length > 20) crashHistory.pop();
+        io.emit('crash_phase', { phase: 'done', round: crash.round, crashPoint: crash.crashPoint, history: crashHistory });
+        setTimeout(startCrashRound, 5000);
+      } else {
+        io.emit('crash_tick', { round: crash.round, mult });
+      }
+    } catch (e) { clearInterval(tick); }
+  }, 100);
+}
+
+// Текущее состояние краша
+app.get('/api/casino/crash/state', (req, res) => {
+  res.json({
+    success: true,
+    round: crash.round,
+    phase: crash.phase,
+    endsAt: crash.phase === 'bet' ? crash.betEndAt : 0,
+    mult: crash.phase === 'run' ? crashMult() : 1,
+    history: crashHistory,
+    myBet: crash.bets.has((req.query.username || '').trim().toLowerCase())
+      ? (() => { const b = crash.bets.get((req.query.username || '').trim().toLowerCase()); return { bet: b.bet, cashed: b.cashed, mult: b.cashMult || 0 }; })()
+      : null
+  });
+});
+
+// Ставка в краш (только фаза ставок)
+app.post('/api/casino/crash/bet', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const amount = Math.floor(Number(req.body.amount) || 0);
+    if (crash.phase !== 'bet') return res.status(400).json({ success: false, message: 'Ставки закрыты, жди след раунд' });
+    if (amount < 5 || amount > 100) return res.status(400).json({ success: false, message: 'Ставка: 5–100$' });
+    if (crash.bets.has(username)) return res.status(400).json({ success: false, message: 'Ты уже поставил в этом раунде' });
+
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Игрок не найден' });
+    const bal = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
+    if (bal < amount) return res.status(400).json({ success: false, message: `Не хватает бабок: ${bal}$` });
+
+    user.casinoBalance = bal - amount;
+    await user.save();
+    crash.bets.set(username, { bet: amount, cashed: false, cashMult: 0 });
+    res.json({ success: true, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Забрать до краха
+app.post('/api/casino/crash/cashout', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    if (crash.phase !== 'run') return res.status(400).json({ success: false, message: 'Уже не докрутишь' });
+    const b = crash.bets.get(username);
+    if (!b) return res.status(404).json({ success: false, message: 'Ты не ставил в этом раунде' });
+    if (b.cashed) return res.status(400).json({ success: false, message: 'Уже забрал' });
+
+    const mult = crashMult();
+    const winnings = Math.floor(b.bet * mult);
+    b.cashed = true;
+    b.cashMult = mult;
+
+    const user = await User.findOne({ username });
+    user.casinoBalance = (user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance) + winnings;
+    await user.save();
+    res.json({ success: true, mult, winnings, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== 3.7.0: АКТИВНОСТЬ + «ДНО ДНЯ» ====================
+
+// Пинг активности из приложения (раз в минуту)
+app.post('/api/activity', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    if (!username) return res.status(400).json({ success: false });
+    await User.updateOne({ username }, { $set: { lastActiveAt: new Date() } });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false });
+  }
+});
+
+// Отчёт «дно дня»: минимум трюфелей/апрувов + самый долгий AFK
+app.get('/api/admin/dayreport', verifyAdmin, async (req, res) => {
+  try {
+    const date = (req.query.date || '').trim() || todayStr();
+    const stats = await DailyStat.find({ date });
+    const users = await User.find({}, { username: 1, team: 1, lastActiveAt: 1, role: 1 });
+
+    const now = Date.now();
+    const rows = users.filter(u => u.role !== 'admin').map(u => {
+      const s = stats.find(x => x.username === u.username);
+      const idleMin = u.lastActiveAt ? Math.floor((now - new Date(u.lastActiveAt).getTime()) / 60000) : null;
+      return {
+        username: u.username,
+        team: u.team || '',
+        truffles: s ? s.truffles : 0,
+        approves: s ? s.approves : 0,
+        idleMin
+      };
+    });
+
+    const pick = (arr, key, max) => {
+      const withVal = arr.filter(r => r[key] !== null);
+      if (!withVal.length) return null;
+      return (max ? withVal.reduce((a, b) => a[key] > b[key] ? a : b) : withVal.reduce((a, b) => a[key] < b[key] ? a : b)).username;
+    };
+
+    res.json({
+      success: true,
+      date,
+      rows,
+      bottoms: {
+        truffles: pick(rows, 'truffles', false),
+        approves: pick(rows, 'approves', false),
+        idle: pick(rows.filter(r => r.idleMin !== null), 'idleMin', true)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== 3.7.0: КАРМА (похвала/пожар) ====================
+
+const karmaSchema = new mongoose.Schema({
+  from: { type: String, required: true, lowercase: true },
+  to: { type: String, required: true, lowercase: true },
+  week: { type: String, required: true },  // '2026-W41'
+  value: { type: Number, required: true }, // +1 или -1
+  createdAt: { type: Date, default: Date.now }
+});
+karmaSchema.index({ from: 1, to: 1, week: 1 }, { unique: true });
+const Karma = mongoose.model('Karma', karmaSchema);
+
+// Текущая ISO-неделя
+function currentWeekStr(d = new Date()) {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+  return date.getUTCFullYear() + '-W' + week;
+}
+
+// Голос в карму: одно голосование «от→кому» в неделю (переголосовать можно)
+app.post('/api/karma', async (req, res) => {
+  try {
+    const from = (req.body.from || '').trim().toLowerCase();
+    const to = (req.body.to || '').trim().toLowerCase();
+    const value = Number(req.body.value) > 0 ? 1 : -1;
+    if (!from || !to) return res.status(400).json({ success: false, message: 'Укажи ники' });
+    if (from === to) return res.status(400).json({ success: false, message: 'Себе нельзя' });
+    const target = await User.findOne({ username: to });
+    if (!target) return res.status(404).json({ success: false, message: 'Такого ника нет' });
+
+    const week = currentWeekStr();
+    await Karma.updateOne({ from, to, week }, { $set: { value } }, { upsert: true });
+    res.json({ success: true, week });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Итоги недели + мои голоса
+app.get('/api/karma', async (req, res) => {
+  try {
+    const week = (req.query.week || '').trim() || currentWeekStr();
+    const voter = (req.query.voter || '').trim().toLowerCase();
+
+    const totals = await Karma.aggregate([
+      { $match: { week } },
+      { $group: { _id: '$to', total: { $sum: '$value' }, votes: { $sum: 1 } } },
+      { $sort: { total: -1 } }
+    ]);
+
+    let myVotes = [];
+    if (voter) {
+      myVotes = await Karma.find({ week, from: voter }, { to: 1, value: 1 });
+      myVotes = myVotes.map(v => ({ to: v.to, value: v.value }));
+    }
+
+    res.json({ success: true, week, totals: totals.map(t => ({ username: t._id, total: t.total, votes: t.votes })), myVotes });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Сервер Support Hub v3 запущен на порту ${PORT}`);
+  // Краш-игра: первый раунд через 8 сек после старта
+  setTimeout(startCrashRound, 8000);
 });
