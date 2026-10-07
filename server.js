@@ -1736,6 +1736,28 @@ app.post('/api/admin/purchases/done', verifyAdmin, async (req, res) => {
   }
 });
 
+// Начислить/списать бабки в казино (админ): amount +100 или -50
+app.post('/api/admin/casino/grant', verifyAdmin, async (req, res) => {
+  try {
+    const target = (req.body.username || '').trim().toLowerCase();
+    const amount = Math.floor(Number(req.body.amount) || 0);
+    if (!target) return res.status(400).json({ success: false, message: 'Не указан ник' });
+    if (!amount || Math.abs(amount) > 100000) {
+      return res.status(400).json({ success: false, message: 'Сумма от -100000 до 100000 (не 0)' });
+    }
+
+    const user = await User.findOne({ username: target });
+    if (!user) return res.status(404).json({ success: false, message: 'Пользователь не найден' });
+
+    const bal = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
+    user.casinoBalance = bal + amount;
+    await user.save();
+    res.json({ success: true, username: user.username, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // ==================== 3.6.0: ТОПЫ (рез серчи / защеканы) ====================
 
 const topsSchema = new mongoose.Schema({
