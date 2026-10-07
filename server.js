@@ -1404,30 +1404,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- SECRETS (3.4.0): сотрудник открыл вкладку secrets — свежий список URL возвращается ЕМУ же ---
-  // data: { from: 'ник', computerId: '...', name: '...', urls: [...] }
-  socket.on('secrets_found', async (data) => {
-    try {
-      if (!data || !Array.isArray(data.urls) || !data.from) return;
-      const sender = await User.findOne({ username: String(data.from).trim().toLowerCase() });
-      if (!sender) return;
-      const payload = {
-        from: sender.username,
-        computerId: String(data.computerId || ''),
-        name: String(data.name || ''),
-        urls: data.urls.slice(0, 400),
-        time: new Date().toLocaleTimeString('ru-RU')
-      };
-      for (const [id, clientNick] of onlineUsers.entries()) {
-        if (clientNick && clientNick.toLowerCase() === sender.username) {
-          io.to(id).emit('secrets_popup', payload);
-        }
-      }
-    } catch (err) {
-      console.error('Ошибка secrets_found:', err.message);
-    }
-  });
-
   // Отключение пользователя
   socket.on('disconnect', () => {
     console.log('Пользователь отключился:', socket.id);
