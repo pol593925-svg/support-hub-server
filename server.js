@@ -34,6 +34,12 @@ const userSchema = new mongoose.Schema({
   isBanned: { type: Boolean, default: false },
   casinoBalance: { type: Number, default: null },   // 3.5.0 — банк казино (null = ещё не выданы стартовые 500)
   casinoLastDaily: { type: String, default: '' },    // дата последнего ежедневного бонуса
+  casinoLastFree: { type: String, default: '' },     // 3.9.0 — дата бесплатного боя дня (МБ)
+  bsElo: { type: Number, default: 1000 },            // 3.9.0 — рейтинг МБ
+  bsWins: { type: Number, default: 0 },
+  bsLosses: { type: Number, default: 0 },
+  bsShots: { type: Number, default: 0 },             // всего выстрелов (точность)
+  bsHits: { type: Number, default: 0 },              // всего попаданий
   lastActiveAt: { type: Date, default: null }        // 3.7.0 — последняя активность в приложении
 });
 const User = mongoose.model('User', userSchema);
@@ -1494,7 +1500,8 @@ app.get('/api/casino/state', async (req, res) => {
     res.json({
       success: true,
       balance: user.casinoBalance,
-      dailyAvailable: user.casinoLastDaily !== todayStr()
+      dailyAvailable: user.casinoLastDaily !== todayStr(),
+      bsFreeAvailable: (user.casinoLastFree || '') !== todayStr()
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -2189,6 +2196,8 @@ server.listen(PORT, () => {
   console.log(`Сервер Support Hub v3 запущен на порту ${PORT}`);
   // Краш-игра: первый раунд через 8 сек после старта
   setTimeout(startCrashRound, 8000);
+  // Опционы: первый раунд через 12 сек
+  setTimeout(startOptionsRound, 12000);
   // Морской бой: возврат ставок в зависших играх (перезапуск сервера)
   (async () => {
     try {
@@ -2203,6 +2212,100 @@ server.listen(PORT, () => {
       if (stuck.length) console.log('Морской бой: возвращено ставок в играх —', stuck.length);
     } catch (e) { console.error('Возврат МБ:', e.message); }
   })();
+});
+
+// ==================== 3.9.0: ОПЦИОНЫ (вверх/вниз, как IQ Option) ====================
+
+const OPT_PAYOUT = 1.8;   // выплата ×1.8 (house edge 10%)
+const OPT_BET_MS = 6000;  // фаза ставок
+const OPT_RUN_MS = 30000; // живой график
+let options = { round: 0, phase: 'idle', startPrice: 100, price: 100, drift: 0, bets: new Map(), betEndAt: 0, runEndAt: 0 };
+let optionsHistory = [];  // [{round, startPrice, endPrice, dir}]
+
+function startOptionsRound() {
+  options.round++;
+  options.phase = 'bet';
+  options.startPrice = 100;
+  options.price = 100;
+  options.drift = (Math.random() - 0.5) * 0.15;
+  options.bets = new Map();
+  options.betEndAt = Date.now() + OPT_BET_MS;
+  options.runEndAt = options.betEndAt + OPT_RUN_MS;
+  io.emit('option_phase', { phase: 'bet', round: options.round, endsAt: options.betEndAt, startPrice: options.startPrice });
+  setTimeout(runOptionsRound, OPT_BET_MS);
+}
+
+function runOptionsRound() {
+  if (options.phase !== 'bet') return;
+  options.phase = 'run';
+  io.emit('option_phase', { phase: 'run', round: options.round, endsAt: options.runEndAt, startPrice: options.startPrice });
+  const tick = setInterval(() => {
+    if (options.phase !== 'run') { clearInterval(tick); return; }
+    if (Date.now() >= options.runEndAt) { clearInterval(tick); settleOptionsRound(); return; }
+    options.price = Math.max(1, options.price + (Math.random() - 0.5) * 1.2 + options.drift);
+    io.emit('option_tick', { round: options.round, price: Number(options.price.toFixed(2)) });
+  }, 250);
+}
+
+async function settleOptionsRound() {
+  options.phase = 'done';
+  const endPrice = Number(options.price.toFixed(2));
+  const dir = endPrice > options.startPrice ? 'up' : endPrice < options.startPrice ? 'down' : 'flat';
+  optionsHistory.unshift({ round: options.round, startPrice: options.startPrice, endPrice, dir });
+  if (optionsHistory.length > 15) optionsHistory.pop();
+  for (const [username, b] of options.bets) {
+    try {
+      const user = await User.findOne({ username });
+      if (!user) continue;
+      let payout = 0;
+      if (dir === 'flat') payout = b.amount;                    // ничья — возврат
+      else if (b.dir === dir) payout = Math.floor(b.amount * OPT_PAYOUT);
+      if (payout > 0) {
+        user.casinoBalance = (user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance) + payout;
+        await user.save();
+      }
+      emitToUser(username, 'option_result', { round: options.round, dir, win: b.dir === dir, amount: b.amount, payout, balance: user.casinoBalance });
+    } catch (e) { console.error('Опционы выплата:', e.message); }
+  }
+  io.emit('option_phase', { phase: 'done', round: options.round, endPrice, dir, history: optionsHistory });
+  setTimeout(startOptionsRound, 5000);
+}
+
+// Состояние раунда опционов
+app.get('/api/options/state', (req, res) => {
+  const username = (req.query.username || '').trim().toLowerCase();
+  res.json({
+    success: true,
+    round: options.round,
+    phase: options.phase,
+    endsAt: options.phase === 'bet' ? options.betEndAt : options.phase === 'run' ? options.runEndAt : 0,
+    startPrice: options.startPrice,
+    price: Number(options.price.toFixed(2)),
+    history: optionsHistory,
+    myBet: options.bets.has(username) ? options.bets.get(username) : null
+  });
+});
+
+// Ставка в опционы
+app.post('/api/options/bet', async (req, res) => {
+  try {
+    if (options.phase !== 'bet') return res.status(400).json({ success: false, message: 'Ставки закрыты, жди след раунд' });
+    const username = (req.body.username || '').trim().toLowerCase();
+    const amount = Math.floor(Number(req.body.amount) || 0);
+    const dir = req.body.dir === 'down' ? 'down' : 'up';
+    if (amount < 5 || amount > 100) return res.status(400).json({ success: false, message: 'Ставка: 5–100$' });
+    if (options.bets.has(username)) return res.status(400).json({ success: false, message: 'Ты уже поставил в этом раунде' });
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    const bal = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
+    if (bal < amount) return res.status(400).json({ success: false, message: `Не хватает: нужно ${amount}$` });
+    user.casinoBalance = bal - amount;
+    await user.save();
+    options.bets.set(username, { amount, dir });
+    res.json({ success: true, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 // ==================== 3.8.0: МОРСКОЙ БОЙ ====================
@@ -2222,6 +2325,15 @@ const bsSchema = new mongoose.Schema({
   shotsB: { type: Array, default: [] },
   turn: { type: String, default: '' },
   winner: { type: String, default: '' },
+  mode: { type: String, default: 'classic' },        // 3.9.0: classic | rapid
+  randomFleet: { type: Boolean, default: false },    // авто-расстановка обоим
+  minesA: { type: Array, default: [] },              // 3.9.0: минные поля [{x,y}...]
+  minesB: { type: Array, default: [] },
+  radarA: { type: Boolean, default: false },         // радар использован
+  radarB: { type: Boolean, default: false },
+  freeUser: { type: String, default: '' },           // кто играет бесплатный бой дня
+  nextShotA: { type: Number, default: 0 },           // rapid: когда можно стрелять
+  nextShotB: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now }
 });
 const Battleship = mongoose.model('Battleship', bsSchema);
@@ -2306,10 +2418,12 @@ function bsView(g, username) {
   const myHit = new Set(myShots.filter(s => s.result === 'hit').map(s => s.x + ',' + s.y));
   const oppShips = g['ships' + opp] || [];
   const sunkShips = oppShips.filter(ship => ship.every(c => myHit.has(c.x + ',' + c.y)));
+  const radarCost = Math.max(1, Math.round(g.bet * 0.2));
   return {
     id: String(g._id),
     phase: g.phase,
     bet: g.bet,
+    mode: g.mode || 'classic',
     opponent: me === 'A' ? g.playerB : g.playerA,
     myTurn: g.turn === username && g.phase === 'battle',
     winner: g.winner,
@@ -2317,6 +2431,14 @@ function bsView(g, username) {
     incoming: oppShots,
     myShots: myShots,
     sunkShips: sunkShips,
+    myMines: g['mines' + me] || [],                    // свои мины (видны только мне)
+    minesOnMe: (g['mines' + opp] || []).length,        // сколько мин поставил соперник (факт)
+    radarUsed: !!g['radar' + me],
+    canRadar: g.phase === 'battle' && !g['radar' + me],
+    radarCost,
+    myNextShotAt: g.mode === 'rapid' ? (g['nextShot' + me] || 0) : 0,
+    iAmFree: g.freeUser === username,
+    oppIsFree: !!g.freeUser && g.freeUser !== username,
     serverTime: Date.now()
   };
 }
@@ -2359,6 +2481,32 @@ function bsArmShotTimer(g) {
   bsTimers.set(String(g._id), t);
 }
 
+// Конец игры: выплата (учёт бесплатного боя), ELO, статистика
+async function bsFinish(g, winner) {
+  const loser = g.playerA === winner ? g.playerB : g.playerA;
+  g.phase = 'done';
+  g.winner = winner;
+  const winUser = await User.findOne({ username: winner });
+  const loseUser = await User.findOne({ username: loser });
+  if (winUser) {
+    // норма: банк 2×ставка (оба платили). Бесплатный бой: казино крывает ставку free —
+    // free-победителю полный банк 2×, победителю против free — только своя ставка назад
+    const pay = g.freeUser ? (g.freeUser === winner ? g.bet * 2 : g.bet) : g.bet * 2;
+    winUser.casinoBalance = (winUser.casinoBalance == null ? CASINO_START_BALANCE : winUser.casinoBalance) + pay;
+    winUser.bsWins = (winUser.bsWins || 0) + 1;
+  }
+  if (loseUser) loseUser.bsLosses = (loseUser.bsLosses || 0) + 1;
+  // ELO K=32
+  const ra = winUser ? (winUser.bsElo || 1000) : 1000;
+  const rb = loseUser ? (loseUser.bsElo || 1000) : 1000;
+  const ea = 1 / (1 + Math.pow(10, (rb - ra) / 400));
+  const gain = Math.round(32 * (1 - ea));
+  if (winUser) winUser.bsElo = ra + gain;
+  if (loseUser) loseUser.bsElo = rb - gain;
+  if (winUser) await winUser.save();
+  if (loseUser) await loseUser.save();
+}
+
 // Выстрел: возвращает true если игра закончена
 async function bsDoShot(g, shooter, x, y) {
   const me = g.playerA === shooter ? 'A' : 'B';
@@ -2367,8 +2515,18 @@ async function bsDoShot(g, shooter, x, y) {
   if (shots.some(s => s.x === x && s.y === y)) return false;
 
   const oppShips = g['ships' + opp];
+  const oppMines = g['mines' + opp] || [];
   const isHit = oppShips.some(ship => ship.some(c => c.x === x && c.y === y));
-  shots.push({ x, y, result: isHit ? 'hit' : 'miss' });
+  const isMine = !isHit && oppMines.some(m => m.x === x && m.y === y);
+  shots.push({ x, y, result: isHit ? 'hit' : isMine ? 'mine' : 'miss' });
+
+  // статистика стрелка (для точности в профиле)
+  const shooterUser = await User.findOne({ username: shooter });
+  if (shooterUser) {
+    shooterUser.bsShots = (shooterUser.bsShots || 0) + 1;
+    if (isHit) shooterUser.bsHits = (shooterUser.bsHits || 0) + 1;
+    await shooterUser.save();
+  }
 
   let gameOver = false;
   if (isHit) {
@@ -2377,14 +2535,13 @@ async function bsDoShot(g, shooter, x, y) {
   }
 
   if (gameOver) {
-    g.phase = 'done';
-    g.winner = shooter;
-    const user = await User.findOne({ username: shooter });
-    if (user) {
-      user.casinoBalance = (user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance) + g.bet * 2;
-      await user.save();
-    }
+    await bsFinish(g, shooter);
+  } else if ((g.mode || 'classic') === 'rapid') {
+    // быстрый огонь: кулдаун 5 сек, наступил на мину — 10
+    const cd = isMine ? 10000 : 5000;
+    g['nextShot' + me] = Date.now() + cd;
   } else {
+    // классика: попал — ход остаётся, промах или мина — переходит
     g.turn = isHit ? shooter : (me === 'A' ? g.playerB : g.playerA);
   }
   await g.save();
@@ -2399,22 +2556,36 @@ app.post('/api/battleship/challenge', async (req, res) => {
   try {
     const from = (req.body.from || '').trim().toLowerCase();
     const to = (req.body.to || '').trim().toLowerCase();
-    const bet = Math.floor(Number(req.body.bet) || 0);
+    const mode = req.body.mode === 'rapid' ? 'rapid' : 'classic';
+    const randomFleet = !!req.body.random;
+    const wantFree = !!req.body.free;
+    let bet = Math.floor(Number(req.body.bet) || 0);
     if (!from || !to) return res.status(400).json({ success: false, message: 'Укажи соперника' });
     if (from === to) return res.status(400).json({ success: false, message: 'Сам с собой скучно' });
-    if (bet < 5 || bet > 100) return res.status(400).json({ success: false, message: 'Ставка: 5–100$' });
 
     const fromUser = await User.findOne({ username: from });
     const toUser = await User.findOne({ username: to });
     if (!toUser) return res.status(404).json({ success: false, message: 'Такого ника нет' });
+
+    let freeUser = '';
+    if (wantFree) {
+      // удача новичка: первый бой дня за счёт казино
+      if ((fromUser.casinoLastFree || '') === todayStr()) {
+        return res.status(400).json({ success: false, message: 'Бесплатный бой дня уже использован' });
+      }
+      bet = 10;
+      freeUser = from;
+    }
+    if (bet < 5 || bet > 100) return res.status(400).json({ success: false, message: 'Ставка: 5–100$' });
+
     const fromBal = fromUser.casinoBalance == null ? CASINO_START_BALANCE : fromUser.casinoBalance;
     const toBal = toUser.casinoBalance == null ? CASINO_START_BALANCE : toUser.casinoBalance;
-    if (fromBal < bet) return res.status(400).json({ success: false, message: `У тебя нет ${bet}$` });
+    if (!freeUser && fromBal < bet) return res.status(400).json({ success: false, message: `У тебя нет ${bet}$` });
     if (toBal < bet) return res.status(400).json({ success: false, message: `У ${to} нет ${bet}$` });
 
     const id = 'b' + (bsSeq++) + '_' + Date.now();
-    bsChallenges.set(id, { id, from, to, bet });
-    emitToUser(to, 'bs_challenge', { id, from, bet });
+    bsChallenges.set(id, { id, from, to, bet, mode, randomFleet, freeUser });
+    emitToUser(to, 'bs_challenge', { id, from, bet, mode, random: randomFleet, free: !!freeUser });
     setTimeout(() => {
       if (bsChallenges.has(id)) {
         bsChallenges.delete(id);
@@ -2445,42 +2616,91 @@ app.post('/api/battleship/respond', async (req, res) => {
 
     const fromUser = await User.findOne({ username: ch.from });
     const toUser = await User.findOne({ username: ch.to });
-    fromUser.casinoBalance = (fromUser.casinoBalance == null ? CASINO_START_BALANCE : fromUser.casinoBalance) - ch.bet;
+    // бесплатный бой: ставку взыскиваем только с платящего, бесплатному фиксируем дату
+    if (ch.freeUser === ch.from) {
+      fromUser.casinoLastFree = todayStr();
+    } else {
+      fromUser.casinoBalance = (fromUser.casinoBalance == null ? CASINO_START_BALANCE : fromUser.casinoBalance) - ch.bet;
+    }
     toUser.casinoBalance = (toUser.casinoBalance == null ? CASINO_START_BALANCE : toUser.casinoBalance) - ch.bet;
     await fromUser.save();
     await toUser.save();
 
-    const g = new Battleship({ playerA: ch.from, playerB: ch.to, bet: ch.bet, phase: 'placement' });
+    const g = new Battleship({
+      playerA: ch.from, playerB: ch.to, bet: ch.bet, phase: 'placement',
+      mode: ch.mode || 'classic', randomFleet: !!ch.randomFleet, freeUser: ch.freeUser || ''
+    });
+    // случайный флот: обоим авто-расстановка — бой стартует сразу
+    if (ch.randomFleet) {
+      g.shipsA = bsRandomShips();
+      g.shipsB = bsRandomShips();
+    }
     await g.save();
 
-    // Таймеры расстановки
-    const timers = {};
-    for (const [side, nick] of [['placeA', ch.from], ['placeB', ch.to]]) {
-      timers[side] = setTimeout(async () => {
-        try {
-          const cur = await Battleship.findById(g._id);
-          if (!cur || cur.phase !== 'placement') return;
-          const s = side === 'placeA' ? 'A' : 'B';
-          if (!cur['ships' + s].length) {
-            const auto = bsRandomShips();
-            if (auto) {
-              cur['ships' + s] = auto;
-              await cur.save();
-              bsMaybeStartBattle(cur);
+    if (!ch.randomFleet) {
+      // Таймеры расстановки
+      const timers = {};
+      for (const [side, nick] of [['placeA', ch.from], ['placeB', ch.to]]) {
+        timers[side] = setTimeout(async () => {
+          try {
+            const cur = await Battleship.findById(g._id);
+            if (!cur || cur.phase !== 'placement') return;
+            const s = side === 'placeA' ? 'A' : 'B';
+            if (!cur['ships' + s].length) {
+              const auto = bsRandomShips();
+              if (auto) {
+                cur['ships' + s] = auto;
+                await cur.save();
+                bsMaybeStartBattle(cur);
+              }
             }
-          }
-        } catch (e) { console.error('МБ авто-расстановка:', e.message); }
-      }, BS_PLACE_MS);
+          } catch (e) { console.error('МБ авто-расстановка:', e.message); }
+        }, BS_PLACE_MS);
+      }
+      bsTimers.set(String(g._id), timers);
     }
-    bsTimers.set(String(g._id), timers);
 
-    emitToUser(ch.from, 'bs_update', bsView(g, ch.from));
-    emitToUser(ch.to, 'bs_update', bsView(g, ch.to));
+    if (ch.randomFleet) {
+      await bsMaybeStartBattle(g);
+    } else {
+      emitToUser(ch.from, 'bs_update', bsView(g, ch.from));
+      emitToUser(ch.to, 'bs_update', bsView(g, ch.to));
+    }
     res.json({ success: true, gameId: String(g._id) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
+// Авто-расстановка мин: 3 свободные клетки (не на кораблях, не на уже поставленных минах)
+function bsPickAutoMines(ships, existing) {
+  const taken = new Set((existing || []).map(m => m.x + ',' + m.y));
+  for (const ship of ships || []) for (const c of ship) taken.add(c.x + ',' + c.y);
+  const free = [];
+  for (let x = 0; x < 10; x++) for (let y = 0; y < 10; y++) {
+    if (!taken.has(x + ',' + y)) free.push({ x, y });
+  }
+  const mines = [];
+  while (mines.length < 3 && free.length) {
+    const i = Math.floor(Math.random() * free.length);
+    mines.push(free.splice(i, 1)[0]);
+  }
+  return mines;
+}
+
+// Валидация мин игрока: 3 шт, в поле, не на кораблях, без дублей
+function bsValidateMines(mines, ships) {
+  if (!Array.isArray(mines) || mines.length !== 3) return null;
+  const seen = new Set();
+  for (const m of mines) {
+    if (!Number.isInteger(m.x) || !Number.isInteger(m.y) || m.x < 0 || m.x > 9 || m.y < 0 || m.y > 9) return null;
+    const k = m.x + ',' + m.y;
+    if (seen.has(k)) return null;
+    seen.add(k);
+    if (ships.some(ship => ship.some(c => c.x === m.x && c.y === m.y))) return null;
+  }
+  return mines.map(m => ({ x: m.x, y: m.y }));
+}
 
 // Старт боя, когда оба расставили
 async function bsMaybeStartBattle(g) {
@@ -2489,6 +2709,10 @@ async function bsMaybeStartBattle(g) {
   if (fresh.shipsA.length && fresh.shipsB.length) {
     fresh.phase = 'battle';
     fresh.turn = Math.random() < 0.5 ? fresh.playerA : fresh.playerB;
+    if (fresh.mode === 'rapid') { const now = Date.now(); fresh.nextShotA = now; fresh.nextShotB = now; }
+    // мины: кто не поставил — расставим автоматически
+    if (!(fresh.minesA || []).length) fresh.minesA = bsPickAutoMines(fresh.shipsA, []);
+    if (!(fresh.minesB || []).length) fresh.minesB = bsPickAutoMines(fresh.shipsB, []);
     await fresh.save();
     const t = bsTimers.get(String(g._id)) || {};
     if (t.placeA) clearTimeout(t.placeA);
@@ -2513,7 +2737,15 @@ app.post('/api/battleship/place', async (req, res) => {
     const ships = bsValidateShips(req.body.ships);
     if (!ships) return res.status(400).json({ success: false, message: 'Расстановка невалидна: корабли не должны касаться' });
 
+    // мины (необязательно): ровно 3, не на кораблях. Не прислал — расставим при старте боя
+    let mines = null;
+    if (req.body.mines !== undefined && req.body.mines !== null) {
+      mines = bsValidateMines(req.body.mines, ships);
+      if (!mines) return res.status(400).json({ success: false, message: 'Мины: ровно 3 клетки, не на кораблях' });
+    }
+
     g['ships' + me] = ships;
+    if (mines) g['mines' + me] = mines;
     await g.save();
     await bsMaybeStartBattle(g);
     res.json({ success: true });
@@ -2545,7 +2777,15 @@ app.post('/api/battleship/shot', async (req, res) => {
     const y = Math.floor(Number(req.body.y));
     const g = await Battleship.findById(id);
     if (!g || g.phase !== 'battle') return res.status(400).json({ success: false, message: 'Бой не идёт' });
-    if (g.turn !== username) return res.status(400).json({ success: false, message: 'Не твой ход' });
+    if (g.playerA !== username && g.playerB !== username) return res.status(403).json({ success: false, message: 'Не твоя игра' });
+    if (g.mode === 'rapid') {
+      const side = g.playerA === username ? 'A' : 'B';
+      if (Date.now() < (g['nextShot' + side] || 0)) {
+        return res.status(400).json({ success: false, message: 'Перезарядка: подожди пару секунд' });
+      }
+    } else if (g.turn !== username) {
+      return res.status(400).json({ success: false, message: 'Не твой ход' });
+    }
     if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 9 || y < 0 || y > 9) {
       return res.status(400).json({ success: false, message: 'Мимо поля' });
     }
@@ -2570,17 +2810,74 @@ app.post('/api/battleship/surrender', async (req, res) => {
     }
 
     const winner = g.playerA === username ? g.playerB : g.playerA;
-    g.phase = 'done';
-    g.winner = winner;
-    const user = await User.findOne({ username: winner });
-    if (user) {
-      user.casinoBalance = (user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance) + g.bet * 2;
-      await user.save();
-    }
+    await bsFinish(g, winner);
     await g.save();
     bsClearTimers(String(g._id));
     bsPushUpdate(g);
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Радар: 1 раз за бой, стоит 20% ставки, подсвечивает зону 3×3 с вражеским кораблём
+app.post('/api/battleship/radar', async (req, res) => {
+  try {
+    const id = String(req.body.id || '');
+    const username = (req.body.username || '').trim().toLowerCase();
+    const g = await Battleship.findById(id);
+    if (!g || g.phase !== 'battle') return res.status(400).json({ success: false, message: 'Бой не идёт' });
+    if (g.playerA !== username && g.playerB !== username) return res.status(403).json({ success: false, message: 'Не твоя игра' });
+    const me = g.playerA === username ? 'A' : 'B';
+    const opp = me === 'A' ? 'B' : 'A';
+    if (g['radar' + me]) return res.status(400).json({ success: false, message: 'Радар уже использован' });
+
+    const cost = Math.max(1, Math.round(g.bet * 0.2));
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    const bal = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
+    if (bal < cost) return res.status(400).json({ success: false, message: `Радар стоит ${cost}$` });
+    user.casinoBalance = bal - cost;
+    await user.save();
+
+    // живые (не потопленные) клетки вражеских кораблей
+    const oppShips = g['ships' + opp];
+    const myShots = g['shots' + me];
+    const hitSet = new Set(myShots.filter(s => s.result === 'hit').map(s => s.x + ',' + s.y));
+    const alive = [];
+    for (const ship of oppShips) {
+      for (const c of ship) if (!hitSet.has(c.x + ',' + c.y)) alive.push(c);
+    }
+    if (!alive.length) return res.status(400).json({ success: false, message: 'Не нашёл кораблей' });
+    const target = alive[Math.floor(Math.random() * alive.length)];
+    const zone = [];
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      const x = target.x + dx, y = target.y + dy;
+      if (x >= 0 && x <= 9 && y >= 0 && y <= 9) zone.push({ x, y });
+    }
+    g['radar' + me] = true;
+    await g.save();
+    bsPushUpdate(g);
+    res.json({ success: true, zone, cost, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Ладдер МБ: топ по ELO
+app.get('/api/battleship/ladder', async (req, res) => {
+  try {
+    const top = await User.find({}, { username: 1, bsElo: 1, bsWins: 1, bsLosses: 1 })
+      .sort({ bsElo: -1 }).limit(20);
+    res.json({
+      success: true,
+      ladder: top.map(u => ({
+        username: u.username,
+        elo: u.bsElo || 1000,
+        wins: u.bsWins || 0,
+        losses: u.bsLosses || 0
+      }))
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
