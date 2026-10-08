@@ -1027,6 +1027,12 @@ app.get('/api/profile', async (req, res) => {
           approves: statAgg[0]?.approves || 0,
           shifts: shiftCount,
           likes: likesReceived[0]?.n || 0
+        },
+        bs: {   // 3.9.0 — статистика морского боя
+          elo: user.bsElo || 1000,
+          wins: user.bsWins || 0,
+          losses: user.bsLosses || 0,
+          accuracy: (user.bsShots || 0) ? Math.round((user.bsHits || 0) / user.bsShots * 100) : 0
         }
       }
     });
