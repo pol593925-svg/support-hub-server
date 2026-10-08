@@ -139,6 +139,21 @@ const salarySchema = new mongoose.Schema({
 salarySchema.index({ month: 1, username: 1 }, { unique: true });
 const Salary = mongoose.model('Salary', salarySchema);
 
+// Схема додепа (займ в казино) — 3.9.0
+const doddepSchema = new mongoose.Schema({
+  username: { type: String, required: true, lowercase: true },
+  amount: { type: Number, required: true },          // сумма займа 50–500
+  dailyReturn: { type: Number, required: true },     // ежедневный возврат = 20% от суммы
+  remaining: { type: Number, default: 0 },           // остаток долга
+  status: { type: String, default: 'pending' },      // pending | approved | rejected | closed
+  lastChargeDate: { type: String, default: '' },     // последний день списания возврата
+  lastFineWeek: { type: String, default: '' },       // неделя, за которую уже выписан штраф −40
+  createdAt: { type: Date, default: Date.now },
+  decidedBy: { type: String, default: '' },
+  decidedAt: { type: Date, default: null }
+});
+const Doddep = mongoose.model('Doddep', doddepSchema);
+
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 // Проверка, что запрос делает админ (передаём ?admin=username в GET или adminUsername в body)
@@ -208,8 +223,7 @@ function calcDurationMin(from, to) {
   return end - start;
 }
 
-function todayStr() {
-  const d = new Date();
+function todayStr(d = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
@@ -2198,6 +2212,9 @@ server.listen(PORT, () => {
   setTimeout(startCrashRound, 8000);
   // Опционы: первый раунд через 12 сек
   setTimeout(startOptionsRound, 12000);
+  // Додепы: обслуживание займов каждый час (возврат 20%/день + штраф за апрув)
+  setTimeout(runDoddepMaintenance, 15000);
+  setInterval(runDoddepMaintenance, 3600000);
   // Морской бой: возврат ставок в зависших играх (перезапуск сервера)
   (async () => {
     try {
@@ -2303,6 +2320,167 @@ app.post('/api/options/bet', async (req, res) => {
     await user.save();
     options.bets.set(username, { amount, dir });
     res.json({ success: true, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== 3.9.0: ДОДЕП (заём в казино) ====================
+// Условия: сумма 50–500$, ежедневный возврат 20% от суммы (удержание из ЗП),
+// 1 апрув в неделю, иначе штраф −40$ с ЗП автоматически. Подтверждает админ.
+
+// Ключ недели (понедельник) 'YYYY-MM-DD'
+function weekKey(d = new Date()) {
+  const day = (d.getDay() + 6) % 7; // понедельник = 0
+  const mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() - day);
+  return todayStr(mon);
+}
+
+// Ежедневное обслуживание займов: возврат 20%/день из ЗП + штраф за отсутствие апрува
+async function runDoddepMaintenance() {
+  const today = todayStr();
+  const wk = weekKey();
+  const month = today.slice(0, 7);
+  try {
+    const loans = await Doddep.find({ status: 'approved', remaining: { $gt: 0 } });
+    for (const loan of loans) {
+      // 1) ежедневный возврат
+      if (loan.lastChargeDate !== today) {
+        const take = Math.min(loan.dailyReturn, loan.remaining);
+        await Salary.findOneAndUpdate(
+          { month, username: loan.username },
+          {
+            $push: { fines: { amount: take, reason: `Додеп: возврат займа (остаток ${loan.remaining - take}$)`, date: today, by: 'system' } },
+            $set: { updatedBy: 'system', updatedAt: new Date() }
+          },
+          { upsert: true, setDefaultsOnInsert: true }
+        );
+        loan.remaining -= take;
+        loan.lastChargeDate = today;
+        if (loan.remaining <= 0) {
+          loan.remaining = 0;
+          loan.status = 'closed';
+          const user = await User.findOne({ username: loan.username });
+          if (user) emitToUser(loan.username, 'show_notification', { text: `🏦 Додеп погашен полностью (${loan.amount}$). Чистый лист!`, from: 'додеп', time: new Date().toLocaleTimeString('ru-RU') });
+        }
+      }
+      // 2) апрув за неделю: меньше 1 за последние 7 дней → штраф 40$ (раз в неделю)
+      if (loan.status === 'approved' && loan.lastFineWeek !== wk) {
+        const from = new Date(); from.setDate(from.getDate() - 7);
+        const fromStr = todayStr(from);
+        const agg = await DailyStat.aggregate([
+          { $match: { date: { $gte: fromStr }, username: loan.username } },
+          { $group: { _id: null, approves: { $sum: '$approves' } } }
+        ]);
+        const approves = agg.length ? agg[0].approves : 0;
+        if (approves < 1) {
+          await Salary.findOneAndUpdate(
+            { month, username: loan.username },
+            {
+              $push: { fines: { amount: 40, reason: 'Додеп: нет апрува за неделю', date: today, by: 'system' } },
+              $set: { updatedBy: 'system', updatedAt: new Date() }
+            },
+            { upsert: true, setDefaultsOnInsert: true }
+          );
+          loan.lastFineWeek = wk;
+          emitToUser(loan.username, 'show_notification', { text: '⚠️ Додеп: за неделю ни одного апрува — штраф 40$ с ЗП.', from: 'додеп', time: new Date().toLocaleTimeString('ru-RU') });
+        } else {
+          loan.lastFineWeek = wk; // условие выполнено, штраф не нужен
+        }
+      }
+      await loan.save();
+    }
+  } catch (e) { console.error('Додеп обслуживание:', e.message); }
+}
+
+// Запросить додеп
+app.post('/api/casino/doddep/request', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const amount = Math.floor(Number(req.body.amount) || 0);
+    if (amount < 50 || amount > 500) return res.status(400).json({ success: false, message: 'Сумма додепа: 50–500$' });
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    const active = await Doddep.findOne({ username, status: { $in: ['pending', 'approved'] } });
+    if (active) return res.status(400).json({ success: false, message: 'У тебя уже есть активный додеп — сначала закрой его' });
+    const loan = new Doddep({ username, amount, dailyReturn: Math.round(amount * 0.2) });
+    await loan.save();
+    // админы получают попап с запросом
+    const admins = await User.find({ role: 'admin' }, { username: 1 });
+    for (const a of admins) {
+      emitToUser(a.username, 'show_notification', {
+        text: `🏦 ${username} запросил додеп ${amount}$. Зайди в админку → «💰 Додепы».`,
+        from: 'додеп', time: new Date().toLocaleTimeString('ru-RU')
+      });
+    }
+    res.json({ success: true, id: String(loan._id), dailyReturn: loan.dailyReturn });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Мой додеп (статус)
+app.get('/api/casino/doddep/my', async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    const loan = await Doddep.findOne({ username, status: { $in: ['pending', 'approved'] } }).sort({ createdAt: -1 });
+    if (!loan) return res.json({ success: true, loan: null });
+    res.json({
+      success: true,
+      loan: {
+        id: String(loan._id), amount: loan.amount, dailyReturn: loan.dailyReturn,
+        remaining: loan.remaining, status: loan.status
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Список запросов на додеп (админ)
+app.get('/api/admin/doddep/list', async (req, res) => {
+  try {
+    const admin = (req.query.admin || '').trim().toLowerCase();
+    const adminUser = await User.findOne({ username: admin });
+    if (!adminUser || adminUser.role !== 'admin') return res.status(403).json({ success: false, message: 'Только для админа' });
+    const pending = await Doddep.find({ status: 'pending' }).sort({ createdAt: -1 }).limit(50);
+    const active = await Doddep.find({ status: 'approved', remaining: { $gt: 0 } }).sort({ createdAt: -1 }).limit(50);
+    res.json({ success: true, pending, active });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Подтвердить/отклонить додеп (админ)
+app.post('/api/admin/doddep/decide', async (req, res) => {
+  try {
+    const admin = (req.body.adminUsername || '').trim().toLowerCase();
+    const adminUser = await User.findOne({ username: admin });
+    if (!adminUser || adminUser.role !== 'admin') return res.status(403).json({ success: false, message: 'Только для админа' });
+    const loan = await Doddep.findById(String(req.body.id || ''));
+    if (!loan || loan.status !== 'pending') return res.status(400).json({ success: false, message: 'Запрос уже обработан' });
+    loan.decidedBy = admin;
+    loan.decidedAt = new Date();
+    if (!req.body.approve) {
+      loan.status = 'rejected';
+      await loan.save();
+      emitToUser(loan.username, 'show_notification', { text: `❌ Додеп ${loan.amount}$ отклонён.`, from: 'додеп', time: new Date().toLocaleTimeString('ru-RU') });
+      return res.json({ success: true, status: 'rejected' });
+    }
+    loan.status = 'approved';
+    loan.remaining = loan.amount;
+    loan.lastChargeDate = todayStr(); // первый возврат — со следующего дня
+    await loan.save();
+    const user = await User.findOne({ username: loan.username });
+    if (user) {
+      user.casinoBalance = (user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance) + loan.amount;
+      await user.save();
+    }
+    emitToUser(loan.username, 'show_notification', {
+      text: `🏦 Додеп одобрен: +${loan.amount}$ в казино. Возврат ${loan.dailyReturn}$/день из ЗП, 1 апрув в неделю, иначе −40$ с ЗП.`,
+      from: 'додеп', time: new Date().toLocaleTimeString('ru-RU')
+    });
+    res.json({ success: true, status: 'approved', balance: user ? user.casinoBalance : null });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
