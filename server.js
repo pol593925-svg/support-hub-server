@@ -1485,16 +1485,24 @@ function broadcastOnlineUsers() {
 }
 
 // --- КАЗИНО (3.5.0): баланс, слот 4 барабана, рулетка, ежедневный бонус ---
-const CASINO_SYMBOLS = ['7', '🍒', '🔔', '💎', '⭐', '🍋'];
+// 3.10.0: темы слота — классика, Bananza, Зевс, Собаки
+const SLOT_THEMES = {
+  classic: { name: '🍒 Классика', symbols: ['7', '🍒', '🔔', '💎', '⭐', '🍋'] },
+  bananza: { name: '🍌 Bananza', symbols: ['7', '🍌', '🍍', '🥭', '🍉', '🍇'] },
+  zeus:    { name: '⚡ Зевс',    symbols: ['7', '⚡', '🏛️', '🦅', '👑', '🛡️'] },
+  dogs:    { name: '🐶 Собаки',  symbols: ['7', '🐕', '🐩', '🐕‍🦺', '🦴', '🏠'] }
+};
 const RED_NUMBERS = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
 const CASINO_START_BALANCE = 500;
 const CASINO_DAILY = 20;
 
 // Один прокрут слота: реальные шансы, выплаты как в казино
-function slotRoll() {
+function slotRoll(theme) {
+  const t = SLOT_THEMES[theme] || SLOT_THEMES.classic;
+  const syms = t.symbols;
   const reels = [];
   for (let i = 0; i < 4; i++) {
-    reels.push(Math.random() < 0.18 ? '7' : CASINO_SYMBOLS[1 + Math.floor(Math.random() * (CASINO_SYMBOLS.length - 1))]);
+    reels.push(Math.random() < 0.18 ? '7' : syms[1 + Math.floor(Math.random() * (syms.length - 1))]);
   }
   const counts = {};
   reels.forEach(r => { counts[r] = (counts[r] || 0) + 1; });
@@ -1547,11 +1555,12 @@ app.post('/api/casino/daily', async (req, res) => {
   }
 });
 
-// Слот: ставка 5 или 10
+// Слот: ставка 5 или 10, тема барабанов (3.10.0)
 app.post('/api/casino/spin', async (req, res) => {
   try {
     const username = (req.body.username || '').trim().toLowerCase();
     const bet = Number(req.body.bet) === 10 ? 10 : 5;
+    const theme = SLOT_THEMES[req.body.theme] ? req.body.theme : 'classic';
     const user = await User.findOne({ username });
     if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
     if (user.casinoBalance == null) user.casinoBalance = CASINO_START_BALANCE;
@@ -1564,7 +1573,7 @@ app.post('/api/casino/spin', async (req, res) => {
     }
 
     user.casinoBalance -= bet;
-    const { reels, multiplier } = slotRoll();
+    const { reels, multiplier } = slotRoll(theme);
     const winnings = bet * multiplier;
     user.casinoBalance += winnings;
 
@@ -2326,6 +2335,157 @@ app.post('/api/options/bet', async (req, res) => {
     await user.save();
     options.bets.set(username, { amount, dir });
     res.json({ success: true, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== 3.10.0: БЛЕКДЖЕК С ДИЛЕРОМ ====================
+
+const BJ_SUITS = ['♠', '♥', '♦', '♣'];
+const BJ_RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+const bjGames = new Map(); // username -> {bet, deck, player[], dealer[], status, doubled}
+
+function bjNewDeck() {
+  const d = [];
+  for (const s of BJ_SUITS) for (const r of BJ_RANKS) d.push({ r, s });
+  for (let i = d.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [d[i], d[j]] = [d[j], d[i]];
+  }
+  return d;
+}
+
+// Сумма очков с учётом тузов 1/11
+function bjValue(cards) {
+  let sum = 0, aces = 0;
+  for (const c of cards) {
+    if (c.r === 'A') { aces++; sum += 11; }
+    else if (c.r === 'J' || c.r === 'Q' || c.r === 'K') sum += 10;
+    else sum += Number(c.r);
+  }
+  while (sum > 21 && aces > 0) { sum -= 10; aces--; }
+  return sum;
+}
+
+function bjIsBlackjack(cards) { return cards.length === 2 && bjValue(cards) === 21; }
+
+// Вид для клиента: дилерскую закрытую карту не показываем до конца
+function bjView(g) {
+  const done = g.status === 'done';
+  return {
+    bet: g.bet,
+    player: g.player,
+    playerSum: bjValue(g.player),
+    playerBJ: bjIsBlackjack(g.player),
+    dealer: done ? g.dealer : [g.dealer[0], null],
+    dealerSum: done ? bjValue(g.dealer) : bjValue([g.dealer[0]]),
+    dealerBJ: done && bjIsBlackjack(g.dealer),
+    status: g.status,
+    doubled: !!g.doubled,
+    result: g.result || ''   // 'win' | 'lose' | 'push' | 'bj'
+  };
+}
+
+// Дилер добирает до 17 и сравниваем
+async function bjSettle(g, user) {
+  while (bjValue(g.dealer) < 17) g.dealer.push(g.deck.pop());
+  const p = bjValue(g.player), d = bjValue(g.dealer);
+  let payout = 0, result;
+  if (p > 21) { result = 'lose'; }
+  else if (bjIsBlackjack(g.dealer) && bjIsBlackjack(g.player)) { result = 'push'; payout = g.bet; }
+  else if (bjIsBlackjack(g.player)) { result = 'bj'; payout = Math.floor(g.bet * 2.5); }
+  else if (bjIsBlackjack(g.dealer)) { result = 'lose'; }
+  else if (d > 21 || p > d) { result = 'win'; payout = g.bet * 2; }
+  else if (p === d) { result = 'push'; payout = g.bet; }
+  else { result = 'lose'; }
+  g.status = 'done';
+  g.result = result;
+  if (payout > 0) {
+    user.casinoBalance = (user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance) + payout;
+    await user.save();
+  }
+  return payout;
+}
+
+// Раздача
+app.post('/api/blackjack/start', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const bet = Math.floor(Number(req.body.bet) || 0);
+    if (bet < 5 || bet > 100) return res.status(400).json({ success: false, message: 'Ставка: 5–100$' });
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    const existing = bjGames.get(username);
+    if (existing && existing.status !== 'done') {
+      return res.status(400).json({ success: false, message: 'Добей текущую раздачу' });
+    }
+    const bal = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
+    if (bal < bet) return res.status(400).json({ success: false, message: `Не хватает: нужно ${bet}$` });
+    user.casinoBalance = bal - bet;
+    await user.save();
+
+    const deck = bjNewDeck();
+    const g = { bet, deck, player: [deck.pop(), deck.pop()], dealer: [deck.pop(), deck.pop()], status: 'player', doubled: false };
+    bjGames.set(username, g);
+
+    // мгновенный блекджек игрока
+    if (bjIsBlackjack(g.player)) {
+      await bjSettle(g, user);
+      bjGames.set(username, g);
+    }
+    res.json({ success: true, game: bjView(g), balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Ход: hit | stand | double
+app.post('/api/blackjack/action', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const action = String(req.body.action || '');
+    const g = bjGames.get(username);
+    if (!g || g.status !== 'player') return res.status(400).json({ success: false, message: 'Нет активной раздачи' });
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+
+    if (action === 'hit') {
+      g.player.push(g.deck.pop());
+      if (bjValue(g.player) >= 21) {  // 21 или перебор — автостоп
+        await bjSettle(g, user);
+      }
+    } else if (action === 'stand') {
+      await bjSettle(g, user);
+    } else if (action === 'double') {
+      if (g.player.length !== 2 || g.doubled) {
+        return res.status(400).json({ success: false, message: 'Удвоить можно только на первых двух картах' });
+      }
+      const bal = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
+      if (bal < g.bet) return res.status(400).json({ success: false, message: 'Не хватает на удвоение' });
+      user.casinoBalance = bal - g.bet;
+      await user.save();
+      g.bet *= 2;
+      g.doubled = true;
+      g.player.push(g.deck.pop());
+      await bjSettle(g, user);
+    } else {
+      return res.status(400).json({ success: false, message: 'Неизвестное действие' });
+    }
+    if (g.status === 'done') setTimeout(() => bjGames.delete(username), 60000); // минута на просмотр
+    res.json({ success: true, game: bjView(g), balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Состояние текущей раздачи (перезаход в комнату)
+app.get('/api/blackjack/state', async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    const g = bjGames.get(username);
+    if (!g) return res.json({ success: true, game: null });
+    res.json({ success: true, game: bjView(g) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
