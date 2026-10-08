@@ -2555,3 +2555,33 @@ app.post('/api/battleship/shot', async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
+// Сдаться (проигрыш, соперник забирает банк)
+app.post('/api/battleship/surrender', async (req, res) => {
+  try {
+    const id = String(req.body.id || '');
+    const username = (req.body.username || '').trim().toLowerCase();
+    const g = await Battleship.findById(id);
+    if (!g || !['placement', 'battle'].includes(g.phase)) {
+      return res.status(400).json({ success: false, message: 'Игра не идёт' });
+    }
+    if (g.playerA !== username && g.playerB !== username) {
+      return res.status(403).json({ success: false, message: 'Не твоя игра' });
+    }
+
+    const winner = g.playerA === username ? g.playerB : g.playerA;
+    g.phase = 'done';
+    g.winner = winner;
+    const user = await User.findOne({ username: winner });
+    if (user) {
+      user.casinoBalance = (user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance) + g.bet * 2;
+      await user.save();
+    }
+    await g.save();
+    bsClearTimers(String(g._id));
+    bsPushUpdate(g);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
