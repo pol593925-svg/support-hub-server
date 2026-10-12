@@ -2603,6 +2603,58 @@ app.get('/api/casino/doddep/my', async (req, res) => {
   }
 });
 
+// Вернуть долг (полностью или частично) — 3.11.0
+// body: { username, amount? } — без amount гасится весь остаток
+app.post('/api/casino/doddep/repay', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    const loan = await Doddep.findOne({ username, status: 'approved', remaining: { $gt: 0 } }).sort({ createdAt: -1 });
+    if (!loan) return res.status(400).json({ success: false, message: 'Активного долга нет' });
+    let amount = (req.body.amount == null) ? loan.remaining : Math.floor(Number(req.body.amount) || 0);
+    if (amount <= 0) return res.status(400).json({ success: false, message: 'Сумма должна быть больше 0' });
+    if (amount > loan.remaining) amount = loan.remaining;
+    const balance = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
+    if (balance < amount) return res.status(400).json({ success: false, message: `Не хватает бабок: на балансе ${balance}$` });
+
+    user.casinoBalance = balance - amount;
+    await user.save();
+    loan.remaining -= amount;
+    if (loan.remaining > 0) {
+      loan.dailyReturn = Math.max(1, Math.round(loan.remaining * 0.2)); // ежедневный возврат пересчитывается от остатка
+    } else {
+      loan.remaining = 0;
+      loan.status = 'closed';
+    }
+    await loan.save();
+    await new Event({
+      date: todayStr(),
+      type: 'doddep_repay',
+      user: username,
+      data: { amount, remaining: loan.remaining, closed: loan.status === 'closed' }
+    }).save();
+
+    const closedNow = loan.status === 'closed';
+    emitToUser(username, 'show_notification', {
+      text: closedNow
+        ? `🏦 Долг погашен полностью! −${amount}$ с баланса. Чистый лист 🎉`
+        : `🏦 Возврат долга: −${amount}$ с баланса. Остаток долга: ${loan.remaining}$ (возврат ${loan.dailyReturn}$/день)`,
+      from: 'додеп', time: new Date().toLocaleTimeString('ru-RU')
+    });
+    const admins = await User.find({ role: 'admin' }, { username: 1 });
+    for (const a of admins) {
+      emitToUser(a.username, 'show_notification', {
+        text: `🏦 ${username} вернул долг ${amount}$${closedNow ? ' — долг закрыт полностью' : `, остаток ${loan.remaining}$`}`,
+        from: 'додеп', time: new Date().toLocaleTimeString('ru-RU')
+      });
+    }
+    res.json({ success: true, balance: user.casinoBalance, remaining: loan.remaining, closed: closedNow });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // Список запросов на додеп (админ)
 app.get('/api/admin/doddep/list', async (req, res) => {
   try {
