@@ -1500,6 +1500,36 @@ io.on('connection', (socket) => {
     }
   });
 
+
+  // --- СКРИМЕР ОТ АДМИНА (3.13.2): фото на весь экран сотрудника ---
+  socket.on('admin_scare', async (data) => {
+    try {
+      if (!data || !data.dataUrl) return;
+      const payload = {
+        dataUrl: String(data.dataUrl),
+        from: data.from || 'admin'
+      };
+      if (data.target && data.target !== 'all') {
+        for (const [id, clientNick] of onlineUsers.entries()) {
+          if (clientNick && clientNick.toLowerCase() === String(data.target).toLowerCase()) {
+            io.to(id).emit('show_scare', payload);
+          }
+        }
+      } else {
+        io.emit('show_scare', payload);
+      }
+      const event = new Event({
+        date: todayStr(),
+        type: 'scare',
+        user: (data.from || 'admin').toLowerCase(),
+        data: { target: data.target || 'all' }
+      });
+      await event.save();
+    } catch (err) {
+      console.error('Ошибка скримера:', err.message);
+    }
+  });
+
   // Запрос скрина с экрана сотрудника (админ/ТЛ) — 3.6.0
   socket.on('admin_screenshot_request', async (data) => {
     try {
