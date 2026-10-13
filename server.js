@@ -38,6 +38,7 @@ const userSchema = new mongoose.Schema({
   casinoWagered: { type: Number, default: 0 },       // 3.12.0 — суммарный оборот ставок (VIP-уровни)
   casinoLastWheel: { type: String, default: '' },    // 3.12.0 — дата последнего прокрута колеса фортуны
   casinoLastCase: { type: String, default: '' },     // 3.13.0 — дата открытия ежедневного кейса
+  casinoBannedUntil: { type: Date, default: null },  // 3.13.1 — бан в казино до даты (null = не забанен)
   bsElo: { type: Number, default: 1000 },            // 3.9.0 — рейтинг МБ
   bsWins: { type: Number, default: 0 },
   bsLosses: { type: Number, default: 0 },
@@ -363,6 +364,27 @@ app.post('/api/moderate/ban', async (req, res) => {
 // --- АДМИН-РОУТЫ: ПОЛЬЗОВАТЕЛИ ---
 
 // Список всех пользователей (для админки: мут/бан, счётчики)
+// 3.13.1: бан / разбан в казино (minutes = 0 — снять бан)
+app.post('/api/admin/casino-ban', verifyAdmin, async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const minutes = Number(req.body.minutes) || 0;
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    user.casinoBannedUntil = minutes > 0 ? new Date(Date.now() + minutes * 60000) : null;
+    await user.save();
+    emitToUser(username, 'casino_banned', { until: user.casinoBannedUntil ? user.casinoBannedUntil.getTime() : null, minutes });
+    await new Event({
+      date: todayStr(), type: 'casinoban',
+      user: (req.body.adminUsername || 'admin').toLowerCase(),
+      data: { target: username, minutes }
+    }).save();
+    res.json({ success: true, username, until: user.casinoBannedUntil });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 app.get('/api/admin/users', verifyAdmin, async (req, res) => {
   try {
     const users = await User.find({}, { password: 0 }).sort({ username: 1 });
@@ -1424,6 +1446,24 @@ io.on('connection', (socket) => {
     }
   });
 
+
+  // --- ПРИНУДИТЕЛЬНЫЙ ПЕРЕЗАПУСК ПРИЛОЖЕНИЯ У ВСЕХ (3.13.1) ---
+  socket.on('admin_force_restart', async (data) => {
+    try {
+      if (!data || !data.from) return;
+      const admin = await User.findOne({ username: String(data.from).trim().toLowerCase() });
+      if (!admin || admin.role !== 'admin') return; // только админ
+      for (const [id, clientNick] of onlineUsers.entries()) {
+        // сам админ не перезапускается
+        if (clientNick && clientNick.toLowerCase() !== admin.username) {
+          io.to(id).emit('force_restart', { by: admin.username });
+        }
+      }
+    } catch (err) {
+      console.error('Ошибка команды перезапуска:', err);
+    }
+  });
+
   // --- ФОТО ОТ АДМИНА: открывается у сотрудника в отдельном окне ---
   socket.on('admin_image', async (data) => {
     try {
@@ -1527,6 +1567,22 @@ function slotRoll(theme) {
   }
   return { reels, multiplier };
 }
+
+// 3.13.1: бан в казино — блокируем все изменяющие запросы в /api/casino (кроме админских начислений)
+app.use('/api/casino', async (req, res, next) => {
+  try {
+    if (req.method === 'GET' || req.path.includes('/admin/')) return next();
+    const username = String((req.body && (req.body.username || req.body.from)) || req.query.username || '').trim().toLowerCase();
+    if (!username) return next();
+    const user = await User.findOne({ username });
+    if (user && user.casinoBannedUntil && user.casinoBannedUntil.getTime() > Date.now()) {
+      const leftMin = Math.ceil((user.casinoBannedUntil.getTime() - Date.now()) / 60000);
+      const left = leftMin >= 1440 ? Math.round(leftMin / 1440) + ' дн.' : leftMin >= 60 ? Math.round(leftMin / 60) + ' ч.' : leftMin + ' мин.';
+      return res.status(403).json({ success: false, message: `🚫 Ты забанен в казино ещё на ${left}` });
+    }
+    next();
+  } catch (e) { next(); }
+});
 
 // Баланс + доступность ежедневного бонуса
 app.get('/api/casino/state', async (req, res) => {
