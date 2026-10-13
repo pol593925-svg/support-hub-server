@@ -37,6 +37,7 @@ const userSchema = new mongoose.Schema({
   casinoLastFree: { type: String, default: '' },     // 3.9.0 — дата бесплатного боя дня (МБ)
   casinoWagered: { type: Number, default: 0 },       // 3.12.0 — суммарный оборот ставок (VIP-уровни)
   casinoLastWheel: { type: String, default: '' },    // 3.12.0 — дата последнего прокрута колеса фортуны
+  casinoLastCase: { type: String, default: '' },     // 3.13.0 — дата открытия ежедневного кейса
   bsElo: { type: Number, default: 1000 },            // 3.9.0 — рейтинг МБ
   bsWins: { type: Number, default: 0 },
   bsLosses: { type: Number, default: 0 },
@@ -1309,7 +1310,8 @@ io.on('connection', (socket) => {
       const payload = {
         text: String(data.text),
         from: data.from || 'Fifflaren',
-        time: new Date().toLocaleTimeString('ru-RU')
+        time: new Date().toLocaleTimeString('ru-RU'),
+        sound: ['default', 'fart', 'moan'].includes(data.sound) ? data.sound : 'default'
       };
 
       // Рассылка: всем или одному конкретному нику
@@ -1431,7 +1433,8 @@ io.on('connection', (socket) => {
         dataUrl: String(data.dataUrl),
         text: String(data.text || ''),
         from: data.from || 'admin',
-        time: new Date().toLocaleTimeString('ru-RU')
+        time: new Date().toLocaleTimeString('ru-RU'),
+        sound: ['default', 'fart', 'moan'].includes(data.sound) ? data.sound : 'default'
       };
 
       if (data.target && data.target !== 'all') {
@@ -3657,6 +3660,321 @@ app.get('/api/battleship/ladder', async (req, res) => {
         losses: u.bsLosses || 0
       }))
     });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+
+// ==================== 3.13.0 ====================
+// ПЕТУШИНЫЕ БЕГА · ЕЖЕДНЕВНЫЙ КЕЙС · РУССКАЯ РУЛЕТКА
+
+// --- Петушиные бега ---
+const RACE_ROOSTERS = [
+  { name: 'Обэ',             odds: 2  },
+  { name: 'Рыжий Барон',     odds: 3  },
+  { name: 'Сэр Кудах',       odds: 5  },
+  { name: 'Огненный Хвост',  odds: 8  },
+  { name: 'Гроза Двора',     odds: 12 }
+];
+const RACE_BET_MS = 60000;   // приём ставок 60 сек
+const RACE_RUN_MS = 20000;   // сам забег 20 сек
+const RACE_PAUSE_MS = 8000;  // пауза между забегами
+
+const race = {
+  round: 1,
+  phase: 'bet',          // 'bet' | 'run' | 'pause'
+  endsAt: Date.now() + RACE_BET_MS,
+  positions: [0, 0, 0, 0, 0], // 0..100
+  winner: -1,
+  bets: new Map()        // username -> { rooster, amount }
+};
+
+function racePublic(username) {
+  return {
+    round: race.round,
+    phase: race.phase,
+    endsAt: race.endsAt,
+    timeLeft: Math.max(0, Math.round((race.endsAt - Date.now()) / 1000)),
+    winner: race.winner,
+    positions: [...race.positions],
+    roosters: RACE_ROOSTERS.map((r, i) => ({ name: r.name, odds: r.odds, pos: race.positions[i], img: 'obii-head.png' })),
+    myBet: username && race.bets.has(username) ? race.bets.get(username) : null
+  };
+}
+
+async function raceFinish() {
+  // взвешенный выбор победителя: шанс обратно пропорционален коэффициенту
+  const weights = RACE_ROOSTERS.map(r => 1 / r.odds);
+  const total = weights.reduce((s, w) => s + w, 0);
+  let roll = Math.random() * total, winIdx = 0;
+  for (let i = 0; i < weights.length; i++) { roll -= weights[i]; if (roll <= 0) { winIdx = i; break; } }
+  race.winner = winIdx;
+  race.phase = 'pause';
+  race.endsAt = Date.now() + RACE_PAUSE_MS;
+
+  const results = [];
+  for (const [uname, b] of race.bets.entries()) {
+    const user = await User.findOne({ username: uname });
+    if (!user) continue;
+    if (user.casinoBalance == null) user.casinoBalance = CASINO_START_BALANCE;
+    if (b.rooster === winIdx) {
+      const payout = Math.round(b.amount * RACE_ROOSTERS[winIdx].odds);
+      user.casinoBalance += payout;
+      results.push({ username: uname, win: true, payout, balance: user.casinoBalance, rooster: b.rooster });
+    } else {
+      results.push({ username: uname, win: false, payout: 0, balance: user.casinoBalance, rooster: b.rooster });
+    }
+    await user.save();
+  }
+  await new Event({
+    date: todayStr(), type: 'casino', user: 'race',
+    data: { round: race.round, winner: RACE_ROOSTERS[winIdx].name, winIdx, bets: race.bets.size }
+  }).save();
+  io.emit('race_result', { round: race.round, winner: winIdx, winnerName: RACE_ROOSTERS[winIdx].name, odds: RACE_ROOSTERS[winIdx].odds, results });
+  race.bets.clear();
+}
+
+// игровой цикл бегов
+setInterval(() => {
+  const now = Date.now();
+  if (race.phase === 'bet' && now >= race.endsAt) {
+    race.phase = 'run';
+    race.endsAt = now + RACE_RUN_MS;
+    io.emit('race_start', { round: race.round, timeLeft: Math.round(RACE_RUN_MS / 1000) });
+  } else if (race.phase === 'run') {
+    // петухи бегут: каждый тик добавляем прогресс, фаворит быстрее
+    for (let i = 0; i < 5; i++) {
+      const speed = (105 - RACE_ROOSTERS[i].odds * 5) / 20; // очков в секунду, фаворит быстрее
+      race.positions[i] = Math.min(100, race.positions[i] + speed * (0.7 + Math.random() * 0.6));
+    }
+    io.emit('race_tick', { positions: [...race.positions], timeLeft: Math.max(0, Math.round((race.endsAt - now) / 1000)) });
+    if (now >= race.endsAt || race.positions.some(p => p >= 100)) {
+      raceFinish().catch(err => console.error('raceFinish:', err.message));
+    }
+  } else if (race.phase === 'pause' && now >= race.endsAt) {
+    race.round++;
+    race.phase = 'bet';
+    race.endsAt = now + RACE_BET_MS;
+    race.positions = [0, 0, 0, 0, 0];
+    race.winner = -1;
+    io.emit('race_new', { round: race.round, timeLeft: Math.round(RACE_BET_MS / 1000) });
+  }
+}, 1000);
+
+app.get('/api/casino/race/state', async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    res.json({ success: true, race: racePublic(username) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/casino/race/bet', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const rooster = Number(req.body.rooster);
+    const amount = Number(req.body.amount);
+    if (!username) return res.status(400).json({ success: false, message: 'Нет игрока' });
+    if (!(rooster >= 0 && rooster < RACE_ROOSTERS.length)) return res.status(400).json({ success: false, message: 'Выбери петуха' });
+    if (!(amount >= 5 && amount <= 500)) return res.status(400).json({ success: false, message: 'Ставка от 5$ до 500$' });
+    if (race.phase !== 'bet') return res.status(400).json({ success: false, message: 'Приём ставок закрыт — забег уже идёт' });
+    if (race.bets.has(username)) return res.status(400).json({ success: false, message: 'Ты уже поставил на этот забег' });
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    if (user.casinoBalance == null) user.casinoBalance = CASINO_START_BALANCE;
+    if (user.casinoBalance < amount) return res.status(400).json({ success: false, message: 'Не хватает денег' });
+    user.casinoBalance -= amount;
+    addWager(user, amount);
+    await user.save();
+    race.bets.set(username, { rooster, amount });
+    io.emit('race_bet', { username, rooster, amount, totalBets: race.bets.size });
+    res.json({ success: true, balance: user.casinoBalance, myBet: { rooster, amount } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- Ежедневный кейс ---
+const CASE_REWARDS = [
+  { v: 0,   w: (lvl) => Math.max(1, 10 - lvl) },
+  { v: 5,   w: () => 5 },
+  { v: 15,  w: () => 3 },
+  { v: 30,  w: () => 2 },
+  { v: 60,  w: () => 1 },
+  { v: 100, w: (lvl) => Math.max(0, lvl - 2) } // с 3 уровня VIP появляется шанс на 100$
+];
+
+app.get('/api/casino/case/state', async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    res.json({ success: true, available: (user.casinoLastCase || '') !== todayStr(), level: casinoLevelOf(user.casinoWagered) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/casino/case/open', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    if (user.casinoBalance == null) user.casinoBalance = CASINO_START_BALANCE;
+    const today = todayStr();
+    if ((user.casinoLastCase || '') === today) {
+      return res.status(429).json({ success: false, message: 'Кейс на сегодня уже открыт — возвращайся завтра' });
+    }
+    user.casinoLastCase = today;
+    const lvl = casinoLevelOf(user.casinoWagered);
+    const weights = CASE_REWARDS.map(r => r.w(lvl));
+    const total = weights.reduce((s, w) => s + w, 0);
+    let roll = Math.random() * total, idx = 0;
+    for (let i = 0; i < weights.length; i++) { roll -= weights[i]; if (roll <= 0) { idx = i; break; } }
+    const reward = CASE_REWARDS[idx].v;
+    user.casinoBalance += reward;
+    await user.save();
+    await new Event({
+      date: today, type: 'casino', user: username,
+      data: { case: true, reward, balance: user.casinoBalance }
+    }).save();
+    res.json({ success: true, reward, balance: user.casinoBalance, level: lvl });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- Русская рулетка (дуэль на деньги) ---
+const rrGames = new Map();     // id -> {id, players:[a,b], bet, turn, bullet, chambersFired, status}
+const rrChallenges = new Map(); // id -> {id, from, to, bet, createdAt}
+
+function rrGameFor(username) {
+  for (const g of rrGames.values()) if (g.players.includes(username)) return g;
+  return null;
+}
+function rrChallengeFor(username) {
+  for (const c of rrChallenges.values()) if (c.to === username || c.from === username) return c;
+  return null;
+}
+
+app.post('/api/casino/rr/challenge', async (req, res) => {
+  try {
+    const from = (req.body.from || '').trim().toLowerCase();
+    const to = (req.body.to || '').trim().toLowerCase();
+    const bet = Number(req.body.bet);
+    if (!from || !to) return res.status(400).json({ success: false, message: 'Укажи соперника' });
+    if (from === to) return res.status(400).json({ success: false, message: 'Нельзя вызвать самого себя' });
+    if (!(bet >= 5 && bet <= 100)) return res.status(400).json({ success: false, message: 'Ставка от 5$ до 100$' });
+    const [fromUser, toUser] = await Promise.all([User.findOne({ username: from }), User.findOne({ username: to })]);
+    if (!fromUser || !toUser) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    if (rrGameFor(from) || rrGameFor(to) || rrChallengeFor(from) || rrChallengeFor(to)) {
+      return res.status(400).json({ success: false, message: 'Есть незавершённая игра или вызов' });
+    }
+    if ((fromUser.casinoBalance == null ? CASINO_START_BALANCE : fromUser.casinoBalance) < bet) {
+      return res.status(400).json({ success: false, message: 'Не хватает денег на ставку' });
+    }
+    const id = 'rr' + Date.now() + Math.floor(Math.random() * 1000);
+    rrChallenges.set(id, { id, from, to, bet, createdAt: Date.now() });
+    setTimeout(() => { if (rrChallenges.has(id)) { rrChallenges.delete(id); emitToUser(to, 'rr_expired', { id, from }); } }, 60000);
+    emitToUser(to, 'rr_challenge', { id, from, bet });
+    res.json({ success: true, id });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/casino/rr/answer', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const id = String(req.body.id || '');
+    const accept = !!req.body.accept;
+    const ch = rrChallenges.get(id);
+    if (!ch) return res.status(404).json({ success: false, message: 'Вызов не найден или истёк' });
+    if (ch.to !== username) return res.status(403).json({ success: false, message: 'Это не твой вызов' });
+    rrChallenges.delete(id);
+    if (!accept) {
+      emitToUser(ch.from, 'rr_declined', { id, to: username });
+      return res.json({ success: true, accepted: false });
+    }
+    const [a, b] = await Promise.all([User.findOne({ username: ch.from }), User.findOne({ username: ch.to })]);
+    if (!a || !b) return res.status(404).json({ success: false, message: 'Игрок не найден' });
+    if ((a.casinoBalance == null ? CASINO_START_BALANCE : a.casinoBalance) < ch.bet ||
+        (b.casinoBalance == null ? CASINO_START_BALANCE : b.casinoBalance) < ch.bet) {
+      emitToUser(ch.from, 'rr_declined', { id, to: username, reason: 'no_money' });
+      return res.status(400).json({ success: false, message: 'У кого-то не хватает денег' });
+    }
+    a.casinoBalance = (a.casinoBalance == null ? CASINO_START_BALANCE : a.casinoBalance) - ch.bet;
+    b.casinoBalance = (b.casinoBalance == null ? CASINO_START_BALANCE : b.casinoBalance) - ch.bet;
+    addWager(a, ch.bet); addWager(b, ch.bet);
+    await Promise.all([a.save(), b.save()]);
+    const game = {
+      id: 'rrg' + Date.now(), players: [ch.from, ch.to], bet: ch.bet,
+      turn: 0, bullet: Math.floor(Math.random() * 6), chambersFired: 0, status: 'active'
+    };
+    rrGames.set(game.id, game);
+    for (const p of game.players) {
+      emitToUser(p, 'rr_start', { id: game.id, players: game.players, bet: game.bet, yourTurn: game.players[game.turn] === p, balance: p === ch.from ? a.casinoBalance : b.casinoBalance });
+    }
+    res.json({ success: true, accepted: true, id: game.id });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.get('/api/casino/rr/state', async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    const g = rrGameFor(username);
+    const ch = rrChallengeFor(username);
+    const out = { success: true, game: null, challenge: null };
+    if (g) out.game = { id: g.id, players: g.players, bet: g.bet, yourTurn: g.players[g.turn] === username, chambersFired: g.chambersFired };
+    if (ch) out.challenge = ch.to === username ? { id: ch.id, from: ch.from, bet: ch.bet, incoming: true } : { id: ch.id, to: ch.to, bet: ch.bet, incoming: false };
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/casino/rr/pull', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const g = rrGameFor(username);
+    if (!g || g.status !== 'active') return res.status(400).json({ success: false, message: 'Нет активной игры' });
+    if (g.players[g.turn] !== username) return res.status(400).json({ success: false, message: 'Не твой ход' });
+
+    const chamber = g.chambersFired; // какая камора сейчас под курком
+    g.chambersFired++;
+    const boom = (chamber === g.bullet);
+
+    if (boom) {
+      g.status = 'done';
+      const loser = username;
+      const winner = g.players.find(p => p !== username);
+      const winUser = await User.findOne({ username: winner });
+      if (winUser) {
+        if (winUser.casinoBalance == null) winUser.casinoBalance = CASINO_START_BALANCE;
+        winUser.casinoBalance += g.bet * 2;
+        await winUser.save();
+      }
+      const loseUser = await User.findOne({ username: loser });
+      await new Event({
+        date: todayStr(), type: 'casino', user: 'rr',
+        data: { winner, loser, bet: g.bet, chambersFired: g.chambersFired, balance: winUser ? winUser.casinoBalance : null }
+      }).save();
+      for (const p of g.players) {
+        emitToUser(p, 'rr_result', { id: g.id, boom: true, chamber, loser, winner, bet: g.bet, payout: g.bet * 2, youWin: p === winner, balance: p === winner && winUser ? winUser.casinoBalance : (loseUser ? loseUser.casinoBalance : null) });
+      }
+      rrGames.delete(g.id);
+      return res.json({ success: true, boom: true, chamber, loser, winner });
+    }
+
+    g.turn = 1 - g.turn;
+    for (const p of g.players) {
+      emitToUser(p, 'rr_turn', { id: g.id, chamber, safe: true, chambersFired: g.chambersFired, yourTurn: g.players[g.turn] === p });
+    }
+    res.json({ success: true, boom: false, chamber, chambersFired: g.chambersFired });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
