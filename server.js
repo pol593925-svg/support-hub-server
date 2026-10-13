@@ -35,6 +35,8 @@ const userSchema = new mongoose.Schema({
   casinoBalance: { type: Number, default: null },   // 3.5.0 — банк казино (null = ещё не выданы стартовые 500)
   casinoLastDaily: { type: String, default: '' },    // дата последнего ежедневного бонуса
   casinoLastFree: { type: String, default: '' },     // 3.9.0 — дата бесплатного боя дня (МБ)
+  casinoWagered: { type: Number, default: 0 },       // 3.12.0 — суммарный оборот ставок (VIP-уровни)
+  casinoLastWheel: { type: String, default: '' },    // 3.12.0 — дата последнего прокрута колеса фортуны
   bsElo: { type: Number, default: 1000 },            // 3.9.0 — рейтинг МБ
   bsWins: { type: Number, default: 0 },
   bsLosses: { type: Number, default: 0 },
@@ -1496,6 +1498,11 @@ const RED_NUMBERS = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 
 const CASINO_START_BALANCE = 500;
 const CASINO_DAILY = 20;
 
+// 3.12.0: VIP-уровень от оборота ставок (каждые 100$ оборота = +1 уровень)
+function casinoLevelOf(wagered) { return Math.floor((wagered || 0) / 100); }
+function casinoDailyForLevel(level) { return CASINO_DAILY + Math.min(level, 6) * 5; } // макс 50$ на 6+ уровне
+function addWager(user, amount) { user.casinoWagered = (user.casinoWagered || 0) + amount; }
+
 // Один прокрут слота: реальные шансы, выплаты как в казино
 function slotRoll(theme) {
   const t = SLOT_THEMES[theme] || SLOT_THEMES.classic;
@@ -1529,7 +1536,10 @@ app.get('/api/casino/state', async (req, res) => {
       success: true,
       balance: user.casinoBalance,
       dailyAvailable: user.casinoLastDaily !== todayStr(),
-      bsFreeAvailable: (user.casinoLastFree || '') !== todayStr()
+      bsFreeAvailable: (user.casinoLastFree || '') !== todayStr(),
+      level: casinoLevelOf(user.casinoWagered),
+      wagered: user.casinoWagered || 0,
+      dailyAmount: casinoDailyForLevel(casinoLevelOf(user.casinoWagered))
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -1547,9 +1557,11 @@ app.post('/api/casino/daily', async (req, res) => {
       return res.status(429).json({ success: false, message: 'Сегодня уже забирал — возвращайся завтра' });
     }
     user.casinoLastDaily = todayStr();
-    user.casinoBalance += CASINO_DAILY;
+    const lvl = casinoLevelOf(user.casinoWagered);
+    const bonus = casinoDailyForLevel(lvl);
+    user.casinoBalance += bonus;
     await user.save();
-    res.json({ success: true, balance: user.casinoBalance });
+    res.json({ success: true, balance: user.casinoBalance, bonus, level: lvl });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1573,6 +1585,7 @@ app.post('/api/casino/spin', async (req, res) => {
     }
 
     user.casinoBalance -= bet;
+    addWager(user, bet);
     const { reels, multiplier } = slotRoll(theme);
     const winnings = bet * multiplier;
     user.casinoBalance += winnings;
@@ -1635,6 +1648,7 @@ app.post('/api/casino/roulette', async (req, res) => {
     }
 
     user.casinoBalance -= bet;
+    addWager(user, bet);
     const winnings = win ? bet * multiplier : 0;
     user.casinoBalance += winnings;
     await user.save();
@@ -1962,6 +1976,8 @@ app.post('/api/casino/duel/respond', async (req, res) => {
     const toUser = await User.findOne({ username: duel.to });
     fromUser.casinoBalance = (fromUser.casinoBalance == null ? CASINO_START_BALANCE : fromUser.casinoBalance) - duel.bet;
     toUser.casinoBalance = (toUser.casinoBalance == null ? CASINO_START_BALANCE : toUser.casinoBalance) - duel.bet;
+    addWager(fromUser, duel.bet);
+    addWager(toUser, duel.bet);
 
     const rollA = slotRoll();
     const rollB = slotRoll();
@@ -2069,6 +2085,7 @@ app.post('/api/casino/crash/bet', async (req, res) => {
     if (bal < amount) return res.status(400).json({ success: false, message: `Не хватает бабок: ${bal}$` });
 
     user.casinoBalance = bal - amount;
+    addWager(user, amount);
     await user.save();
     crash.bets.set(username, { bet: amount, cashed: false, cashMult: 0 });
     res.json({ success: true, balance: user.casinoBalance });
@@ -2332,6 +2349,7 @@ app.post('/api/options/bet', async (req, res) => {
     const bal = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
     if (bal < amount) return res.status(400).json({ success: false, message: `Не хватает: нужно ${amount}$` });
     user.casinoBalance = bal - amount;
+    addWager(user, amount);
     await user.save();
     options.bets.set(username, { amount, dir });
     res.json({ success: true, balance: user.casinoBalance });
@@ -2423,6 +2441,7 @@ app.post('/api/blackjack/start', async (req, res) => {
     const bal = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
     if (bal < bet) return res.status(400).json({ success: false, message: `Не хватает: нужно ${bet}$` });
     user.casinoBalance = bal - bet;
+    addWager(user, bet);
     await user.save();
 
     const deck = bjNewDeck();
@@ -2699,6 +2718,368 @@ app.post('/api/admin/doddep/decide', async (req, res) => {
       from: 'додеп', time: new Date().toLocaleTimeString('ru-RU')
     });
     res.json({ success: true, status: 'approved', balance: user ? user.casinoBalance : null });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== 3.12.0: ПЕРЕВОДЫ, КОЛЕСО ФОРТУНЫ, ЛОТЕРЕЯ, САПЁР, ВИДЕО-ПОКЕР ====================
+
+// --- ПЕРЕВОДЫ МЕЖДУ ИГРОКАМИ (комиссия 5%, минимум 1$) ---
+app.post('/api/casino/transfer', async (req, res) => {
+  try {
+    const from = (req.body.from || '').trim().toLowerCase();
+    const to = (req.body.to || '').trim().toLowerCase();
+    const amount = Math.floor(Number(req.body.amount) || 0);
+    if (amount < 5) return res.status(400).json({ success: false, message: 'Минимальный перевод: 5$' });
+    if (from === to) return res.status(400).json({ success: false, message: 'Сам себе не переведёшь' });
+    const fromUser = await User.findOne({ username: from });
+    const toUser = await User.findOne({ username: to });
+    if (!fromUser) return res.status(404).json({ success: false, message: 'Отправитель не найден' });
+    if (!toUser) return res.status(404).json({ success: false, message: 'Такого ника нет' });
+    const fromBal = fromUser.casinoBalance == null ? CASINO_START_BALANCE : fromUser.casinoBalance;
+    if (fromBal < amount) return res.status(400).json({ success: false, message: `Не хватает: у тебя ${fromBal}$` });
+    const fee = Math.max(1, Math.round(amount * 0.05));
+    fromUser.casinoBalance = fromBal - amount;
+    toUser.casinoBalance = (toUser.casinoBalance == null ? CASINO_START_BALANCE : toUser.casinoBalance) + (amount - fee);
+    await fromUser.save();
+    await toUser.save();
+    await new Event({ date: todayStr(), type: 'transfer', user: from, data: { to, amount, fee } }).save();
+    emitToUser(to, 'show_notification', {
+      text: `💸 ${from} перевёл тебе ${amount - fee}$ (комиссия казино ${fee}$)`,
+      from: 'перевод', time: new Date().toLocaleTimeString('ru-RU')
+    });
+    res.json({ success: true, balance: fromUser.casinoBalance, fee, delivered: amount - fee });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- КОЛЕСО ФОРТУНЫ: бесплатный прокрут раз в день. БОЛЬШАЯ ЧАСТЬ СЕКТОРОВ — ШТРАФЫ ---
+const WHEEL_SECTORS = [
+  { id: 'fine5',   label: '−5$',          w: 10, kind: 'fine',  value: 5 },
+  { id: 'fine10',  label: '−10$',         w: 8,  kind: 'fine',  value: 10 },
+  { id: 'fine100', label: '−100$',        w: 1,  kind: 'fine',  value: 100 },
+  { id: 'win5',    label: '+5$',          w: 3,  kind: 'cash',  value: 5 },
+  { id: 'win10',   label: '+10$',         w: 2,  kind: 'cash',  value: 10 },
+  { id: 'win20',   label: '+20$',         w: 1,  kind: 'cash',  value: 20 },
+  { id: 'win50',   label: '+50$',         w: 1,  kind: 'cash',  value: 50 },
+  { id: 'spin',    label: '🎰 Фриспин',   w: 2,  kind: 'spin' },
+  { id: 'sleep',   label: '💤 Час ко сну', w: 1,  kind: 'sleep' }
+];
+const WHEEL_TOTAL_W = WHEEL_SECTORS.reduce((s, x) => s + x.w, 0);
+
+app.get('/api/casino/wheel/state', async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    res.json({ success: true, available: user.casinoLastWheel !== todayStr(), sectors: WHEEL_SECTORS.map(s => ({ id: s.id, label: s.label, w: s.w })) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/casino/wheel/spin', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    if (user.casinoBalance == null) user.casinoBalance = CASINO_START_BALANCE;
+    if (user.casinoLastWheel === todayStr()) {
+      return res.status(429).json({ success: false, message: 'Колесо крутится раз в день — возвращайся завтра' });
+    }
+    user.casinoLastWheel = todayStr();
+
+    let roll = Math.random() * WHEEL_TOTAL_W;
+    let sector = WHEEL_SECTORS[0];
+    for (const s of WHEEL_SECTORS) { if (roll < s.w) { sector = s; break; } roll -= s.w; }
+
+    let detail = '';
+    if (sector.kind === 'fine') {
+      const take = Math.min(sector.value, user.casinoBalance); // не уходим в минус
+      user.casinoBalance -= take;
+      detail = `штраф −${take}$`;
+    } else if (sector.kind === 'cash') {
+      user.casinoBalance += sector.value;
+      detail = `приз +${sector.value}$`;
+    } else if (sector.kind === 'spin') {
+      const { multiplier } = slotRoll('classic');
+      const winnings = 5 * multiplier;
+      user.casinoBalance += winnings;
+      detail = `фриспин выиграл ${winnings}$`;
+    } else if (sector.kind === 'sleep') {
+      const purchase = new Purchase({ username, item: 'sleep_hour', price: 0 });
+      await purchase.save();
+      io.emit('shop_purchase', { user: username, item: '💤 Час ко сну (колесо фортуны)', price: 0, id: String(purchase._id) });
+      detail = 'час ко сну — заявка админу';
+    }
+    await user.save();
+    await new Event({ date: todayStr(), type: 'wheel', user: username, data: { sector: sector.id, label: sector.label } }).save();
+    emitToUser(username, 'show_notification', {
+      text: `🎡 Колесо фортуны: ${sector.label} — ${detail}`,
+      from: 'колесо', time: new Date().toLocaleTimeString('ru-RU')
+    });
+    res.json({ success: true, sector: sector.id, label: sector.label, kind: sector.kind, detail, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- ЛОТЕРЕЯ: билет 5$, розыгрыш всего банка каждый день в 21:00 МСК ---
+const MSK_OFFSET_MS = 3 * 3600 * 1000;
+function lotteryToday() { return todayStr(new Date(Date.now() + MSK_OFFSET_MS)); }
+
+const lotteryTicketSchema = new mongoose.Schema({
+  date: { type: String, required: true },
+  username: { type: String, required: true, lowercase: true },
+  n: { type: Number, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+const LotteryTicket = mongoose.model('LotteryTicket', lotteryTicketSchema);
+const lotteryDaySchema = new mongoose.Schema({
+  date: { type: String, required: true, unique: true },
+  pool: { type: Number, default: 0 },
+  winner: { type: String, default: '' },
+  winPool: { type: Number, default: 0 },
+  played: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
+});
+const LotteryDay = mongoose.model('LotteryDay', lotteryDaySchema);
+
+app.get('/api/casino/lottery/state', async (req, res) => {
+  try {
+    const username = (req.query.username || '').trim().toLowerCase();
+    const date = lotteryToday();
+    const total = await LotteryTicket.countDocuments({ date });
+    const my = await LotteryTicket.countDocuments({ date, username });
+    const day = await LotteryDay.findOne({ date });
+    const last = await LotteryDay.findOne({ played: true }).sort({ date: -1 });
+    const now = new Date(Date.now() + MSK_OFFSET_MS);
+    const drawAt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 21, 0, 0);
+    res.json({
+      success: true,
+      pool: (day && day.pool) || 0,
+      tickets: total,
+      myTickets: my,
+      played: !!(day && day.played),
+      msUntilDraw: Math.max(0, drawAt.getTime() - now.getTime()),
+      lastWinner: last ? { date: last.date, winner: last.winner, pool: last.winPool } : null
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/casino/lottery/buy', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    const date = lotteryToday();
+    const day = await LotteryDay.findOne({ date });
+    if (day && day.played) return res.status(400).json({ success: false, message: 'Сегодняшний розыгрыш уже сыгран — жди завтра' });
+    const my = await LotteryTicket.countDocuments({ date, username });
+    if (my >= 20) return res.status(400).json({ success: false, message: 'Максимум 20 билетов в день' });
+    const bal = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
+    if (bal < 5) return res.status(400).json({ success: false, message: `Не хватает: нужно 5$` });
+    user.casinoBalance = bal - 5;
+    await user.save();
+    await LotteryDay.findOneAndUpdate({ date }, { $inc: { pool: 5 } }, { upsert: true, setDefaultsOnInsert: true });
+    const total = await LotteryTicket.countDocuments({ date });
+    const ticket = new LotteryTicket({ date, username, n: total + 1 });
+    await ticket.save();
+    res.json({ success: true, balance: user.casinoBalance, myTickets: my + 1, ticket: total + 1 });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Розыгрыш лотереи: проверяем каждые 30 секунд
+async function lotteryDrawTick() {
+  try {
+    const date = lotteryToday();
+    const now = new Date(Date.now() + MSK_OFFSET_MS);
+    if (now.getHours() < 21) return;
+    const day = await LotteryDay.findOne({ date });
+    if (!day || day.played) return;
+    const tickets = await LotteryTicket.find({ date });
+    if (!tickets.length) return;
+    const win = tickets[Math.floor(Math.random() * tickets.length)];
+    const winner = await User.findOne({ username: win.username });
+    if (winner) {
+      winner.casinoBalance = (winner.casinoBalance == null ? CASINO_START_BALANCE : winner.casinoBalance) + day.pool;
+      await winner.save();
+    }
+    day.winner = win.username;
+    day.winPool = day.pool;
+    day.played = true;
+    await day.save();
+    io.emit('show_notification', {
+      text: `🎟 Лотерея: ${win.username} выиграл банк ${day.pool}$! Завтра новый розыгрыш в 21:00.`,
+      from: 'лотерея', time: new Date().toLocaleTimeString('ru-RU')
+    });
+  } catch (e) { console.error('Лотерея розыгрыш:', e.message); }
+}
+setInterval(lotteryDrawTick, 30000);
+
+// --- САПЁР: поле 5×5, выбор числа мин, честные множители (house edge 3%) ---
+const minesGames = new Map(); // username -> {bet, mineCount, mines:Set, opened:[], status, payout}
+function minesMultiplier(opened, mineCount, size) {
+  size = size || 25;
+  let p = 1;
+  for (let i = 0; i < opened; i++) p *= (size - mineCount - i) / (size - i);
+  return Math.max(1, Math.round((0.97 / p) * 100) / 100);
+}
+function minesView(g) {
+  return {
+    bet: g.bet, mineCount: g.mineCount, opened: g.opened,
+    multiplier: minesMultiplier(g.opened.length, g.mineCount),
+    status: g.status,
+    mines: g.status === 'done' ? Array.from(g.mines) : [],
+    payout: g.payout || 0
+  };
+}
+
+app.post('/api/casino/mines/start', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const bet = Number(req.body.bet) === 10 ? 10 : 5;
+    const mineCount = [3, 5, 10].includes(Number(req.body.mines)) ? Number(req.body.mines) : 5;
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    const bal = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
+    if (bal < bet) return res.status(400).json({ success: false, message: `Не хватает: нужно ${bet}$` });
+    user.casinoBalance = bal - bet;
+    addWager(user, bet);
+    await user.save();
+    const all = Array.from({ length: 25 }, (_, i) => i);
+    for (let i = all.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [all[i], all[j]] = [all[j], all[i]]; }
+    minesGames.set(username, { bet, mineCount, mines: new Set(all.slice(0, mineCount)), opened: [], status: 'play', payout: 0 });
+    res.json({ success: true, game: minesView(minesGames.get(username)), balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/casino/mines/open', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const cell = Math.floor(Number(req.body.cell));
+    const g = minesGames.get(username);
+    if (!g || g.status !== 'play') return res.status(400).json({ success: false, message: 'Нет активной игры' });
+    if (cell < 0 || cell > 24 || g.opened.includes(cell)) return res.status(400).json({ success: false, message: 'Клетка уже открыта' });
+    if (g.mines.has(cell)) {
+      g.status = 'done';
+      g.payout = 0;
+      const user = await User.findOne({ username });
+      await new Event({ date: todayStr(), type: 'mines', user: username, data: { bet: g.bet, mineCount: g.mineCount, opened: g.opened.length, result: 'boom' } }).save();
+      return res.json({ success: true, game: minesView(g), boom: true, balance: user ? user.casinoBalance : null });
+    }
+    g.opened.push(cell);
+    res.json({ success: true, game: minesView(g), boom: false });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/casino/mines/cashout', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const g = minesGames.get(username);
+    if (!g || g.status !== 'play') return res.status(400).json({ success: false, message: 'Нет активной игры' });
+    if (!g.opened.length) return res.status(400).json({ success: false, message: 'Открой хотя бы одну клетку' });
+    const mult = minesMultiplier(g.opened.length, g.mineCount);
+    const payout = Math.round(g.bet * mult * 100) / 100;
+    g.status = 'done';
+    g.payout = payout;
+    const user = await User.findOne({ username });
+    if (user) {
+      user.casinoBalance = (user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance) + payout;
+      await user.save();
+    }
+    await new Event({ date: todayStr(), type: 'mines', user: username, data: { bet: g.bet, mineCount: g.mineCount, opened: g.opened.length, mult, payout } }).save();
+    res.json({ success: true, game: minesView(g), balance: user ? user.casinoBalance : null });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- ВИДЕО-ПОКЕР: пары валетов и выше платят ---
+const POKER_RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+const POKER_SUITS = ['♠', '♥', '♦', '♣'];
+const pokerGames = new Map(); // username -> {bet, deck, hand[5], status}
+
+function pokerNewDeck() {
+  const d = [];
+  for (const s of POKER_SUITS) for (const r of POKER_RANKS) d.push({ r, s });
+  for (let i = d.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [d[i], d[j]] = [d[j], d[i]]; }
+  return d;
+}
+
+function pokerEvaluate(hand) {
+  const ranks = hand.map(c => POKER_RANKS.indexOf(c.r)).sort((a, b) => a - b);
+  const suits = hand.map(c => c.s);
+  const flush = suits.every(s => s === suits[0]);
+  const uniq = [...new Set(ranks)];
+  let straight = uniq.length === 5 && (uniq[4] - uniq[0] === 4 || (uniq[0] === 0 && uniq[1] === 1 && uniq[2] === 2 && uniq[3] === 3 && uniq[4] === 12)); // колесо A-2-3-4-5
+  const count = {};
+  ranks.forEach(r => count[r] = (count[r] || 0) + 1);
+  const groups = Object.values(count).sort((a, b) => b - a);
+  if (flush && straight && ranks.includes(12) && ranks.includes(11) && ranks.includes(10) && ranks.includes(9) && ranks.includes(8)) return { name: 'Роял-флеш', mult: 250 };
+  if (flush && straight) return { name: 'Стрит-флеш', mult: 50 };
+  if (groups[0] === 4) return { name: 'Каре', mult: 25 };
+  if (groups[0] === 3 && groups[1] === 2) return { name: 'Фулл-хаус', mult: 9 };
+  if (flush) return { name: 'Флеш', mult: 6 };
+  if (straight) return { name: 'Стрит', mult: 4 };
+  if (groups[0] === 3) return { name: 'Тройка', mult: 3 };
+  if (groups[0] === 2 && groups[1] === 2) return { name: 'Две пары', mult: 2 };
+  // пара: валеты и старше
+  const pairRanks = Object.keys(count).filter(r => count[r] === 2).map(Number);
+  if (pairRanks.some(r => r >= POKER_RANKS.indexOf('J'))) return { name: 'Пара валетов+', mult: 1 };
+  return { name: 'Нет комбинации', mult: 0 };
+}
+
+app.post('/api/casino/poker/start', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const bet = Math.floor(Number(req.body.bet) || 0);
+    if (bet < 5 || bet > 100) return res.status(400).json({ success: false, message: 'Ставка: 5–100$' });
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: 'Нет такого игрока' });
+    const bal = user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance;
+    if (bal < bet) return res.status(400).json({ success: false, message: `Не хватает: нужно ${bet}$` });
+    user.casinoBalance = bal - bet;
+    addWager(user, bet);
+    await user.save();
+    const deck = pokerNewDeck();
+    const hand = [deck.pop(), deck.pop(), deck.pop(), deck.pop(), deck.pop()];
+    pokerGames.set(username, { bet, deck, hand, status: 'draw' });
+    res.json({ success: true, hand, balance: user.casinoBalance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/casino/poker/draw', async (req, res) => {
+  try {
+    const username = (req.body.username || '').trim().toLowerCase();
+    const g = pokerGames.get(username);
+    if (!g || g.status !== 'draw') return res.status(400).json({ success: false, message: 'Нет активной раздачи' });
+    const hold = Array.isArray(req.body.hold) ? req.body.hold.filter(i => Number.isInteger(i) && i >= 0 && i < 5) : [];
+    for (let i = 0; i < 5; i++) {
+      if (!hold.includes(i)) g.hand[i] = g.deck.pop();
+    }
+    g.status = 'done';
+    const combo = pokerEvaluate(g.hand);
+    const payout = g.bet * combo.mult;
+    const user = await User.findOne({ username });
+    if (user) {
+      user.casinoBalance = (user.casinoBalance == null ? CASINO_START_BALANCE : user.casinoBalance) + payout;
+      await user.save();
+    }
+    await new Event({ date: todayStr(), type: 'poker', user: username, data: { bet: g.bet, combo: combo.name, mult: combo.mult, payout } }).save();
+    res.json({ success: true, hand: g.hand, combo: combo.name, mult: combo.mult, payout, balance: user ? user.casinoBalance : null });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -3017,8 +3398,10 @@ app.post('/api/battleship/respond', async (req, res) => {
       fromUser.casinoLastFree = todayStr();
     } else {
       fromUser.casinoBalance = (fromUser.casinoBalance == null ? CASINO_START_BALANCE : fromUser.casinoBalance) - ch.bet;
+      addWager(fromUser, ch.bet);
     }
     toUser.casinoBalance = (toUser.casinoBalance == null ? CASINO_START_BALANCE : toUser.casinoBalance) - ch.bet;
+    addWager(toUser, ch.bet);
     await fromUser.save();
     await toUser.save();
 
