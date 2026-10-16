@@ -423,7 +423,7 @@ app.post('/api/events', async (req, res) => {
     await event.save();
 
     // Уведомляем ТЛ команды: ТЛ — пользователь, чей ник совпадает с названием команды
-    if (['call', 'leave', 'shift', 'bug'].includes(String(type))) {
+    if (['call', 'leave', 'shift', 'bug', 'question'].includes(String(type))) {
       try {
         const sender = await User.findOne({ username: event.user });
         if (sender && sender.team) {
@@ -488,7 +488,7 @@ app.get('/api/tl/events', async (req, res) => {
 
     const filter = {
       user: { $in: memberNicks },
-      type: { $in: ['call', 'leave', 'shift', 'bug'] }
+      type: { $in: ['call', 'leave', 'shift', 'bug', 'question'] }
     };
     const date = req.query.date;
     if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) filter.date = date;
@@ -1530,6 +1530,97 @@ io.on('connection', (socket) => {
     }
   });
 
+
+  // --- «ВРУБИТЬ ДЕМКУ» (3.14.0): демонстрация экрана в звонке сотрудника ---
+  socket.on('admin_force_present', async (data) => {
+    try {
+      if (!data || !data.from || !data.target || data.target === 'all') return;
+      const admin = await User.findOne({ username: String(data.from).trim().toLowerCase() });
+      if (!admin || admin.role !== 'admin') return; // только админ
+      for (const [id, clientNick] of onlineUsers.entries()) {
+        if (clientNick && clientNick.toLowerCase() === String(data.target).toLowerCase()) {
+          io.to(id).emit('force_present', { by: admin.username });
+        }
+      }
+      await new Event({
+        date: todayStr(), type: 'present', user: admin.username,
+        data: { target: String(data.target).toLowerCase() }
+      }).save();
+    } catch (err) { console.error('Ошибка команды демки:', err); }
+  });
+
+  // Результат демки от приложения сотрудника — пересылаем админу
+  socket.on('present_done', (data) => {
+    try {
+      if (!data || !data.by) return;
+      const worker = onlineUsers.get(socket.id) || '';
+      emitToUser(data.by, 'present_result', {
+        worker: worker,
+        ok: !!data.ok,
+        verified: !!data.verified,
+        error: data.error || ''
+      });
+    } catch (err) { console.error('Ошибка результата демки:', err); }
+  });
+
+
+  // --- ПРОСМОТР ЭКРАНА СОТРУДНИКА (3.14.0): прозрачный контроль, с индикатором у сотрудника ---
+  if (!global.__watchPairs) global.__watchPairs = new Map();
+  const watchPairs = global.__watchPairs; // targetNick -> { watcherId, watcherNick, by }
+  socket.on('watch_start', async (data) => {
+    try {
+      if (!data || !data.from || !data.target || data.target === 'all') return;
+      const admin = await User.findOne({ username: String(data.from).trim().toLowerCase() });
+      if (!admin || admin.role !== 'admin') return;
+      const target = String(data.target).trim().toLowerCase();
+      if (watchPairs.has(target)) {
+        emitToUser(admin.username, 'watch_error', { message: 'Этот экран уже смотрит другой админ' });
+        return;
+      }
+      let sent = false;
+      for (const [id, clientNick] of onlineUsers.entries()) {
+        if (clientNick && clientNick.toLowerCase() === target) { io.to(id).emit('watch_request', { by: admin.username }); sent = true; }
+      }
+      if (!sent) { emitToUser(admin.username, 'watch_error', { message: 'Сотрудник оффлайн (приложение не запущено)' }); return; }
+      watchPairs.set(target, { watcherId: socket.id, watcherNick: admin.username, by: admin.username });
+      emitToUser(admin.username, 'watch_started', { target });
+      await new Event({ date: todayStr(), type: 'watch', user: admin.username, data: { target } }).save();
+    } catch (err) { console.error('Ошибка watch_start:', err); }
+  });
+
+  socket.on('watch_frame', (data) => {
+    try {
+      const worker = onlineUsers.get(socket.id);
+      if (!worker) return;
+      const p = watchPairs.get(worker.toLowerCase());
+      if (!p) return;
+      if (typeof data.dataUrl !== 'string' || !data.dataUrl.startsWith('data:image')) return;
+      io.to(p.watcherId).emit('watch_frame', { dataUrl: data.dataUrl.slice(0, 7000000) });
+    } catch (err) { console.error('Ошибка watch_frame:', err); }
+  });
+
+  function watchCleanup(target, reason) {
+    const p = watchPairs.get(target);
+    if (!p) return;
+    watchPairs.delete(target);
+    for (const [id, clientNick] of onlineUsers.entries()) {
+      if (clientNick && clientNick.toLowerCase() === target) io.to(id).emit('watch_stop', { reason });
+    }
+    io.to(p.watcherId).emit('watch_stopped', { target, reason });
+  }
+
+  socket.on('watch_stop', (data) => {
+    try {
+      const who = (onlineUsers.get(socket.id) || '').toLowerCase();
+      const target = String((data && data.target) || who).toLowerCase();
+      const p = watchPairs.get(target);
+      if (!p) return;
+      // остановить может админ-наблюдатель или сам сотрудник
+      if (socket.id !== p.watcherId && who !== target) return;
+      watchCleanup(target, 'stopped');
+    } catch (err) { console.error('Ошибка watch_stop:', err); }
+  });
+
   // Запрос скрина с экрана сотрудника (админ/ТЛ) — 3.6.0
   socket.on('admin_screenshot_request', async (data) => {
     try {
@@ -1549,8 +1640,13 @@ io.on('connection', (socket) => {
   // Отключение пользователя
   socket.on('disconnect', () => {
     console.log('Пользователь отключился:', socket.id);
+    const nick = (onlineUsers.get(socket.id) || '').toLowerCase();
     onlineUsers.delete(socket.id);
     broadcastOnlineUsers();
+    // если уходящий сокет — наблюдатель или сотрудник под наблюдением — завершаем просмотр
+    for (const [target, p] of watchPairs.entries()) {
+      if (p.watcherId === socket.id || target === nick) watchCleanup(target, 'offline');
+    }
   });
 });
 
