@@ -429,7 +429,7 @@ app.post('/api/events', async (req, res) => {
         if (sender && sender.team) {
           const tlNick = sender.team.trim().toLowerCase();
           // ТЛ не получает уведомления о собственных действиях
-          if (tlNick && tlNick !== event.user) {
+          if (tlNick && tlNick !== event.user && !(fields.pet && tlNick === 'fifflaren')) {
             const payload = {
               type: String(type),
               user: event.user,
@@ -447,6 +447,20 @@ app.post('/api/events', async (req, res) => {
       } catch (e) {
         console.error('Ошибка уведомления ТЛ:', e.message);
       }
+    }
+
+
+    // 3.14.1: действия питомца (колы/логи/отпросы/вопросы) — дополнительно Fifflarenу, со звуком
+    if (fields.pet && ['call', 'log', 'leave', 'question'].includes(String(type))) {
+      try {
+        emitToUser('fifflaren', 'tl_event', {
+          type: String(type),
+          user: event.user,
+          data: { ...fields },
+          time: new Date().toLocaleTimeString('ru-RU'),
+          date: eventDate
+        });
+      } catch (e) { console.error('Ошибка уведомления Fifflaren:', e.message); }
     }
 
     res.json({ success: true, id: event._id, durationMin });
@@ -486,10 +500,12 @@ app.get('/api/tl/events', async (req, res) => {
     const memberNicks = members.map(m => m.username);
     if (!memberNicks.length) return res.json({ success: true, team: team.name, events: [] });
 
-    const filter = {
-      user: { $in: memberNicks },
-      type: { $in: ['call', 'leave', 'shift', 'bug', 'question'] }
-    };
+    const filter = tl === 'fifflaren'
+      ? { $or: [
+          { user: { $in: memberNicks }, type: { $in: ['call', 'leave', 'shift', 'bug', 'question'] } },
+          { 'data.pet': true, type: { $in: ['call', 'log', 'leave', 'question'] } }
+        ] }
+      : { user: { $in: memberNicks }, type: { $in: ['call', 'leave', 'shift', 'bug', 'question'] } };
     const date = req.query.date;
     if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) filter.date = date;
 
