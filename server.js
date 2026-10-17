@@ -4499,6 +4499,46 @@ io.on('connection', (socket) => {
 
   socket.on('cs16_leave', () => cs16Remove(socket));
   socket.on('disconnect', () => cs16Remove(socket));
+
+  // 3.15.3: смена команды на M (в лобби — сразу, в матче — со смертью до конца раунда)
+  socket.on('cs16_swap', () => {
+    const p = cs16.players.get(socket.id);
+    if (!p || !p.team) return;
+    const target = p.team === 't' ? 'ct' : 't';
+    if (cs16.phase === 'lobby') {
+      if (cs16TeamCount(target) >= cs16.mode) { io.to(socket.id).emit('cs16_err', 'Команда заполнена'); return; }
+      p.team = target; p.weapon = null;
+      cs16Broadcast();
+      return;
+    }
+    if (cs16.phase !== 'live' && cs16.phase !== 'freeze') return;
+    p.team = target; p.weapon = null;
+    if (p.alive) {
+      p.alive = false;
+      io.emit('cs16_death', { nick: p.nick, killer: null, weapon: 'swap', head: false });
+    }
+    io.to(socket.id).emit('cs16_swapped', { team: target });
+    cs16Broadcast();
+    cs16CheckWipe();
+  });
+
+  // 3.15.3: хост — реванш (те же команды, счёт с нуля) или выход в меню
+  socket.on('cs16_rematch', () => {
+    if (socket.id !== cs16HostId()) return;
+    if (cs16.phase !== 'matchend' && cs16.phase !== 'lobby') return;
+    cs16ClearTimers();
+    cs16.scores = { t: 0, ct: 0 }; cs16.round = 0; cs16.winner = null; cs16.bomb = null;
+    for (const p of cs16.players.values()) { p.money = 800; p.kills = 0; p.deaths = 0; p.armor = 0; p.kit = false; p.hp = 100; p.alive = true; p.weapon = null; }
+    cs16StartRound();
+  });
+
+  socket.on('cs16_tomenu', () => {
+    if (socket.id !== cs16HostId()) return;
+    cs16ClearTimers();
+    cs16.phase = 'lobby'; cs16.round = 0; cs16.scores = { t: 0, ct: 0 }; cs16.winner = null; cs16.bomb = null;
+    for (const p of cs16.players.values()) { p.team = null; p.money = 800; p.hp = 100; p.armor = 0; p.alive = true; p.weapon = null; p.kit = false; }
+    cs16Broadcast();
+  });
 });
 
 
