@@ -4254,6 +4254,7 @@ function cs16StartRound() {
   for (const p of cs16.players.values()) {
     p.alive = true; p.hp = 100;
     if (!p.weapon) p.weapon = p.team === 't' ? 'glock' : 'usp';
+    p.money = Math.min(16000, p.money + 500); // 3.15.5: доход каждый раунд
   }
   cs16Broadcast();
   io.emit('cs16_round_start', {
@@ -4387,15 +4388,21 @@ io.on('connection', (socket) => {
     const target = [...cs16.players.values()].find(x => x.nick.toLowerCase() === String(d.target || '').toLowerCase());
     if (!target || !target.alive || target.team === p.team) return; // фф выключен
     const w = CS16_W[d.weapon] || CS16_W.usp;
-    let dmg = w.dmg * (d.head ? 4 : 1);
-    if (target.armor > 0) dmg = Math.round(dmg * 0.5);
-    dmg = Math.min(target.hp, dmg);
+    // 3.15.5: AWP убивает с одного выстрела, кроме попадания в ногу (игнорирует броню)
+    let dmg;
+    if (d.weapon === 'awp' && d.zone !== 'leg') dmg = 200;
+    else {
+      dmg = w.dmg * (d.head ? 4 : 1);
+      if (d.zone === 'leg') dmg *= 0.7;
+      if (target.armor > 0) dmg = Math.round(dmg * 0.5);
+    }
+    dmg = Math.min(target.hp, Math.round(dmg));
     target.hp -= dmg;
     io.emit('cs16_hit', { target: target.nick, hp: target.hp, dmg, head: !!d.head });
     if (target.hp <= 0) {
       target.alive = false; target.deaths += 1; p.kills += 1;
       target.armor = 0; target.weapon = null; target.kit = false; // убитый теряет оружие и набор сапёра
-      p.money = Math.min(16000, p.money + (w.reward || 300));
+      p.money = Math.min(16000, p.money + 1000); // 3.15.5: награда за убийство
       io.emit('cs16_death', { nick: target.nick, killer: p.nick, weapon: d.weapon, head: !!d.head });
       cs16Broadcast();
       cs16CheckWipe();
