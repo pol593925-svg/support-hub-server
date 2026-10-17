@@ -39,6 +39,8 @@ const userSchema = new mongoose.Schema({
   casinoLastWheel: { type: String, default: '' },    // 3.12.0 — дата последнего прокрута колеса фортуны
   casinoLastCase: { type: String, default: '' },     // 3.13.0 — дата открытия ежедневного кейса
   casinoBannedUntil: { type: Date, default: null },  // 3.13.1 — бан в казино до даты (null = не забанен)
+  cs16Skins: { type: [String], default: [] },        // 3.15.1 — купленные скины оружия КС 1.6
+  cs16Skin: { type: String, default: '' },           // 3.15.1 — экипированный скин ('' = без скина)
   bsElo: { type: Number, default: 1000 },            // 3.9.0 — рейтинг МБ
   bsWins: { type: Number, default: 0 },
   bsLosses: { type: Number, default: 0 },
@@ -4192,6 +4194,7 @@ const CS16_W = {
   kevlar:  { price: 650 },
   hegrenade: { price: 300 },
   flashbang: { price: 200 },
+  defuser:   { price: 200, team: 'ct' }, // набор сапёра
 };
 const CS16_MAX_ROUNDS = 30;
 const CS16_WIN_SCORE = 16;
@@ -4206,12 +4209,14 @@ const cs16 = {
   roundEnds: 0,
   buyUntil: 0,
   timers: [],
+  bomb: null,          // {site, pos, planter, explodesAt}
+  roundTimeout: null,  // таймер «время вышло» (отменяется закладкой бомбы)
 };
 
 function cs16HostId() { return cs16.players.keys().next().value || null; }
 function cs16TeamCount(team) { let n = 0; for (const p of cs16.players.values()) if (p.team === team) n++; return n; }
 function cs16Alive(team) { let n = 0; for (const p of cs16.players.values()) if (p.team === team && p.alive) n++; return n; }
-function cs16ClearTimers() { for (const t of cs16.timers) clearTimeout(t); cs16.timers = []; }
+function cs16ClearTimers() { for (const t of cs16.timers) clearTimeout(t); cs16.timers = []; if (cs16.roundTimeout) { clearTimeout(cs16.roundTimeout); cs16.roundTimeout = null; } }
 function cs16Later(fn, ms) { cs16.timers.push(setTimeout(fn, ms)); }
 
 function cs16State() {
@@ -4228,7 +4233,7 @@ function cs16State() {
   };
 }
 function cs16Broadcast() { io.emit('cs16_state', cs16State()); }
-function cs16Personal(sid) { const p = cs16.players.get(sid); if (p) io.to(sid).emit('cs16_you', { money: p.money, hp: p.hp, armor: p.armor, weapon: p.weapon, team: p.team, alive: p.alive }); }
+function cs16Personal(sid) { const p = cs16.players.get(sid); if (p) io.to(sid).emit('cs16_you', { money: p.money, hp: p.hp, armor: p.armor, weapon: p.weapon, team: p.team, alive: p.alive, kit: p.kit }); }
 
 function cs16Spawn(team, index, total) {
   // Координаты сетки карты (клиент использует те же): CT — сверху, T — снизу
@@ -4239,6 +4244,7 @@ function cs16Spawn(team, index, total) {
 function cs16StartRound() {
   cs16ClearTimers();
   cs16.round += 1;
+  cs16.bomb = null;
   cs16.phase = 'freeze';
   const now = Date.now();
   cs16.freezeEnds = now + 6000;
@@ -4258,7 +4264,7 @@ function cs16StartRound() {
     }),
   });
   cs16Later(() => { cs16.phase = 'live'; cs16Broadcast(); io.emit('cs16_live'); }, 6000);
-  cs16Later(() => cs16EndRound('ct', 'Время вышло'), 6000 + 115000);
+  cs16.roundTimeout = setTimeout(() => cs16EndRound('ct', 'Время вышло'), 6000 + 115000);
 }
 
 function cs16EndRound(winner, reason) {
@@ -4266,10 +4272,13 @@ function cs16EndRound(winner, reason) {
   cs16ClearTimers();
   cs16.phase = 'roundend';
   cs16.scores[winner] += 1;
+  const planted = !!cs16.bomb;
+  cs16.bomb = null;
   // Экономика в духе 1.6
   for (const p of cs16.players.values()) {
     if (p.team === winner) { p.money = Math.min(16000, p.money + 3500); p.lossStreak = 0; }
     else { p.lossStreak = Math.min(4, (p.lossStreak || 0) + 1); p.money = Math.min(16000, p.money + 1500 + 500 * (p.lossStreak - 1)); }
+    if (planted && p.team === 't') p.money = Math.min(16000, p.money + 800); // бонус за закладку
   }
   io.emit('cs16_round_end', { winner, reason, scores: cs16.scores, round: cs16.round });
   cs16Broadcast();
@@ -4295,6 +4304,7 @@ function cs16EndMatch(winner) {
 
 function cs16CheckWipe() {
   if (cs16.phase !== 'live' && cs16.phase !== 'freeze') return;
+  if (cs16.bomb) return; // после закладки раунд решает бомба (взрыв или обезвреживание)
   const tAlive = cs16Alive('t'), ctAlive = cs16Alive('ct');
   if (tAlive === 0 && ctAlive === 0) cs16EndRound('ct', 'Оба выбиты — раунд за CT');
   else if (tAlive === 0) cs16EndRound('ct', 'Террористы выбиты');
@@ -4319,7 +4329,7 @@ io.on('connection', (socket) => {
     for (const [id, p] of cs16.players.entries()) {
       if (p.nick.toLowerCase() === nick.toLowerCase() && id !== socket.id) cs16.players.delete(id);
     }
-    cs16.players.set(socket.id, { nick, team: null, money: 800, hp: 100, armor: 0, alive: true, kills: 0, deaths: 0, weapon: null, lossStreak: 0, joinedAt: Date.now() });
+    cs16.players.set(socket.id, { nick, team: null, money: 800, hp: 100, armor: 0, alive: true, kills: 0, deaths: 0, weapon: null, kit: false, lossStreak: 0, joinedAt: Date.now() });
     cs16Personal(socket.id);
     cs16Broadcast();
   });
@@ -4354,7 +4364,7 @@ io.on('connection', (socket) => {
       return;
     }
     cs16.scores = { t: 0, ct: 0 }; cs16.round = 0; cs16.winner = null;
-    for (const p of cs16.players.values()) { p.money = 800; p.kills = 0; p.deaths = 0; p.armor = 0; }
+    for (const p of cs16.players.values()) { p.money = 800; p.kills = 0; p.deaths = 0; p.armor = 0; p.kit = false; }
     cs16StartRound();
   });
 
@@ -4384,7 +4394,7 @@ io.on('connection', (socket) => {
     io.emit('cs16_hit', { target: target.nick, hp: target.hp, dmg, head: !!d.head });
     if (target.hp <= 0) {
       target.alive = false; target.deaths += 1; p.kills += 1;
-      target.armor = 0; target.weapon = null; // убитый теряет оружие
+      target.armor = 0; target.weapon = null; target.kit = false; // убитый теряет оружие и набор сапёра
       p.money = Math.min(16000, p.money + (w.reward || 300));
       io.emit('cs16_death', { nick: target.nick, killer: p.nick, weapon: d.weapon, head: !!d.head });
       cs16Broadcast();
@@ -4435,6 +4445,7 @@ io.on('connection', (socket) => {
     if (w.team && w.team !== p.team) { io.to(socket.id).emit('cs16_err', 'Это оружие не твоей команды'); return; }
     if (p.money < w.price) { io.to(socket.id).emit('cs16_err', 'Не хватает денег'); return; }
     if (item === 'kevlar') { if (p.armor >= 100) return; p.armor = 100; }
+    else if (item === 'defuser') { if (p.kit) return; p.kit = true; }
     else if (item === 'hegrenade' || item === 'flashbang') { /* гранаты — клиент считает лимит */ }
     else p.weapon = item;
     p.money -= w.price;
@@ -4443,6 +4454,108 @@ io.on('connection', (socket) => {
     cs16Broadcast();
   });
 
+  socket.on('cs16_plant', (d) => {
+    const p = cs16.players.get(socket.id);
+    if (!p || !p.alive || p.team !== 't' || cs16.phase !== 'live' || cs16.bomb) return;
+    const site = d && d.site === 'B' ? 'B' : 'A';
+    cs16.bomb = { site, pos: d.pos || null, planter: p.nick, plantedAt: Date.now(), explodesAt: Date.now() + 40000 };
+    if (cs16.roundTimeout) { clearTimeout(cs16.roundTimeout); cs16.roundTimeout = null; }
+    io.emit('cs16_bomb_planted', { site, pos: cs16.bomb.pos, explodesAt: cs16.bomb.explodesAt, planter: p.nick, now: Date.now() });
+    cs16Broadcast();
+  });
+
+  socket.on('cs16_defuse', () => {
+    const p = cs16.players.get(socket.id);
+    if (!p || !p.alive || p.team !== 'ct' || !cs16.bomb || cs16.phase !== 'live') return;
+    io.emit('cs16_bomb_defused', { nick: p.nick, site: cs16.bomb.site });
+    cs16EndRound('ct', 'Бомба обезврежена');
+  });
+
+  // Только Fifflaren: переназначить хоста или кикнуть игрока из комнаты
+  socket.on('cs16_sethost', (nick) => {
+    const p = cs16.players.get(socket.id);
+    if (!p || p.nick.toLowerCase() !== 'fifflaren') return;
+    const target = [...cs16.players.values()].find(x => x.nick.toLowerCase() === String(nick || '').toLowerCase());
+    if (!target) return;
+    const arr = [...cs16.players.entries()];
+    arr.sort((a, b) => Number(b[1] === target) - Number(a[1] === target));
+    cs16.players = new Map(arr);
+    cs16Broadcast();
+  });
+
+  socket.on('cs16_kick', (nick) => {
+    const p = cs16.players.get(socket.id);
+    if (!p || p.nick.toLowerCase() !== 'fifflaren') return;
+    const entry = [...cs16.players.entries()].find(([, x]) => x.nick.toLowerCase() === String(nick || '').toLowerCase());
+    if (!entry || entry[0] === socket.id) return;
+    const victim = entry[1];
+    cs16.players.delete(entry[0]);
+    io.to(entry[0]).emit('cs16_kicked', { by: 'fifflaren' });
+    io.emit('cs16_leave', { nick: victim.nick });
+    if (cs16.players.size === 0) { cs16ClearTimers(); cs16.phase = 'lobby'; cs16.round = 0; cs16.scores = { t: 0, ct: 0 }; cs16.mode = 5; cs16.winner = null; return; }
+    if (cs16.phase !== 'lobby' && cs16.phase !== 'matchend') cs16CheckWipe();
+    cs16Broadcast();
+  });
+
   socket.on('cs16_leave', () => cs16Remove(socket));
   socket.on('disconnect', () => cs16Remove(socket));
+});
+
+
+// ==================== 3.15.1: МАГАЗИН СКИНОВ КС 1.6 (за казино-деньги) ====================
+const CS16_SKINS = {
+  banana:    { name: '🍌 Банан',     price: 350,  color: 0xf7d54d },
+  waves:     { name: '🌊 Волны',     price: 400,  color: 0x3d9be9 },
+  azimov:    { name: '🔥 Азимов',    price: 500,  color: 0xff7a1a },
+  radiation: { name: '☢️ Радиация',  price: 600,  color: 0x6dff4d, glow: true },
+  dragon:    { name: '🐉 Дракон',    price: 800,  color: 0xd42a2a },
+  neon:      { name: '💜 Неон',      price: 1000, color: 0xb44dff, glow: true },
+  obsidian:  { name: '🖤 Обсидиан',  price: 1200, color: 0x232323, trim: 0xff2222 },
+  gold:      { name: '⭐ Золото',    price: 1500, color: 0xffd700 },
+  prismatic: { name: '🌈 Призматик', price: 2000, color: 0xffffff, rainbow: true },
+  diamond:   { name: '💎 Алмаз',     price: 3000, color: 0x9fe8ff, glow: true },
+};
+
+app.get('/api/cs16/skins', async (req, res) => {
+  try {
+    const user = await User.findOne({ username: String(req.query.username || '').toLowerCase() });
+    if (!user) return res.json({ success: false, message: 'Не найден' });
+    res.json({
+      success: true,
+      balance: user.casinoBalance == null ? 500 : user.casinoBalance,
+      owned: user.cs16Skins || [],
+      equipped: user.cs16Skin || '',
+    });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+app.post('/api/cs16/skins/buy', async (req, res) => {
+  try {
+    const { username, skin } = req.body || {};
+    const s = CS16_SKINS[skin];
+    if (!s) return res.json({ success: false, message: 'Нет такого скина' });
+    const user = await User.findOne({ username: String(username || '').toLowerCase() });
+    if (!user) return res.json({ success: false, message: 'Не найден' });
+    if (!user.casinoBalance && user.casinoBalance !== 0) user.casinoBalance = 500;
+    user.cs16Skins = user.cs16Skins || [];
+    if (user.cs16Skins.includes(skin)) return res.json({ success: false, message: 'Уже куплен' });
+    if (user.casinoBalance < s.price) return res.json({ success: false, message: 'Не хватает денег казино' });
+    user.casinoBalance -= s.price;
+    user.cs16Skins.push(skin);
+    await user.save();
+    res.json({ success: true, balance: user.casinoBalance, owned: user.cs16Skins });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+app.post('/api/cs16/skins/equip', async (req, res) => {
+  try {
+    const { username, skin } = req.body || {};
+    const user = await User.findOne({ username: String(username || '').toLowerCase() });
+    if (!user) return res.json({ success: false, message: 'Не найден' });
+    user.cs16Skins = user.cs16Skins || [];
+    if (skin && !user.cs16Skins.includes(skin)) return res.json({ success: false, message: 'Скин не куплен' });
+    user.cs16Skin = skin || '';
+    await user.save();
+    res.json({ success: true, equipped: user.cs16Skin });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
