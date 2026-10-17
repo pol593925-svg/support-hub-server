@@ -4467,6 +4467,14 @@ io.on('connection', (socket) => {
     const site = d && d.site === 'B' ? 'B' : 'A';
     cs16.bomb = { site, pos: d.pos || null, planter: p.nick, plantedAt: Date.now(), explodesAt: Date.now() + 40000 };
     if (cs16.roundTimeout) { clearTimeout(cs16.roundTimeout); cs16.roundTimeout = null; }
+    // 3.15.8: взрыв по таймеру (раньше бомба не взрывалась — раунд висел)
+    cs16.roundTimeout = setTimeout(() => {
+      if (cs16.phase !== 'live' || !cs16.bomb) return;
+      const b = cs16.bomb;
+      cs16.bomb = null;
+      io.emit('cs16_bomb_exploded', { site: b.site, pos: b.pos });
+      cs16EndRound('t', 'Бомба взорвалась');
+    }, 40000);
     io.emit('cs16_bomb_planted', { site, pos: cs16.bomb.pos, explodesAt: cs16.bomb.explodesAt, planter: p.nick, now: Date.now() });
     cs16Broadcast();
   });
