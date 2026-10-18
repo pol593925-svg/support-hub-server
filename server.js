@@ -4515,7 +4515,7 @@ io.on('connection', (socket) => {
   socket.on('cs16_leave', () => cs16Remove(socket));
   socket.on('disconnect', () => cs16Remove(socket));
 
-  // 3.15.3: смена команды на M (в лобби — сразу, в матче — со смертью до конца раунда)
+  // 3.15.9: смена команды на M (в лобби — сразу, в матче — со смертью до конца раунда)
   socket.on('cs16_swap', () => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.team) return;
@@ -4537,24 +4537,51 @@ io.on('connection', (socket) => {
     cs16CheckWipe();
   });
 
-  // 3.15.3: хост — реванш (те же команды, счёт с нуля) или выход в меню
+  // 3.15.9: хост или Fifflaren — реванш / рестарт / выход в меню (в любой момент матча)
+  const cs16IsBoss = (socket) => {
+    const p = cs16.players.get(socket.id);
+    return p && (socket.id === cs16HostId() || p.nick.toLowerCase() === 'fifflaren');
+  };
   socket.on('cs16_rematch', () => {
-    if (socket.id !== cs16HostId()) return;
+    if (!cs16IsBoss(socket)) return;
     if (cs16.phase !== 'matchend' && cs16.phase !== 'lobby') return;
     cs16ClearTimers();
     cs16.scores = { t: 0, ct: 0 }; cs16.round = 0; cs16.winner = null; cs16.bomb = null;
     for (const p of cs16.players.values()) { p.money = 800; p.kills = 0; p.deaths = 0; p.armor = 0; p.kit = false; p.hp = 100; p.alive = true; p.weapon = null; }
     cs16StartRound();
   });
-
+  socket.on('cs16_restart', () => { // рестарт посреди матча: счёт с нуля, команды сохраняются
+    if (!cs16IsBoss(socket)) return;
+    if (cs16.phase === 'lobby') return;
+    cs16ClearTimers();
+    cs16.scores = { t: 0, ct: 0 }; cs16.round = 0; cs16.winner = null; cs16.bomb = null;
+    for (const p of cs16.players.values()) { p.money = 800; p.kills = 0; p.deaths = 0; p.armor = 0; p.kit = false; p.hp = 100; p.alive = true; p.weapon = null; }
+    cs16StartRound();
+  });
   socket.on('cs16_tomenu', () => {
-    if (socket.id !== cs16HostId()) return;
+    if (!cs16IsBoss(socket)) return;
     cs16ClearTimers();
     cs16.phase = 'lobby'; cs16.round = 0; cs16.scores = { t: 0, ct: 0 }; cs16.winner = null; cs16.bomb = null;
     for (const p of cs16.players.values()) { p.team = null; p.money = 800; p.hp = 100; p.armor = 0; p.alive = true; p.weapon = null; p.kit = false; }
     cs16Broadcast();
   });
 });
+
+// 3.15.9: сторож бомбы и раундов — даже если setTimeout потерян (сон инстанса и т.п.),
+// бомба взорвётся, а зависший раунд завершится
+setInterval(() => {
+  try {
+    const now = Date.now();
+    if (cs16.bomb && now >= cs16.bomb.explodesAt) {
+      const b = cs16.bomb;
+      cs16.bomb = null;
+      io.emit('cs16_bomb_exploded', { site: b.site, pos: b.pos });
+      cs16EndRound('t', 'Бомба взорвалась');
+    } else if ((cs16.phase === 'live' || cs16.phase === 'freeze') && cs16.roundEnds && now > cs16.roundEnds + 20000) {
+      cs16EndRound(cs16.bomb ? 't' : 'ct', cs16.bomb ? 'Бомба взорвалась' : 'Время вышло');
+    }
+  } catch (e) { console.error('cs16 watchdog', e); }
+}, 1000);
 
 
 // ==================== 3.15.1: МАГАЗИН СКИНОВ КС 1.6 (за казино-деньги) ====================
