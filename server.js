@@ -4337,10 +4337,16 @@ io.on('connection', (socket) => {
 
   socket.on('cs16_team', (team) => {
     const p = cs16.players.get(socket.id);
-    if (!p || cs16.phase !== 'lobby') return;
+    if (!p) return;
     if (team !== 't' && team !== 'ct') { p.team = null; cs16Broadcast(); return; }
     if (cs16TeamCount(team) >= cs16.mode) { io.to(socket.id).emit('cs16_err', 'Команда заполнена'); return; }
+    // 3.15.9: можно вступить даже в уже начатый матч — игрок войдёт в игру со следующего раунда
     p.team = team; p.weapon = null;
+    if (cs16.phase !== 'lobby') {
+      p.alive = false; p.hp = 100; p.armor = 0; p.kit = false;
+      if (p.money < 800) p.money = 800;
+      io.to(socket.id).emit('cs16_err', 'Ты в команде! Вступишь в игру со следующего раунда');
+    }
     cs16Broadcast();
   });
 
