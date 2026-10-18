@@ -4366,8 +4366,9 @@ io.on('connection', (socket) => {
 
   socket.on('cs16_start', () => {
     if (socket.id !== cs16HostId() || cs16.phase !== 'lobby') return;
-    if (cs16TeamCount('t') !== cs16.mode || cs16TeamCount('ct') !== cs16.mode) {
-      io.to(socket.id).emit('cs16_err', `Нужно полное распределение: ${cs16.mode} на ${cs16.mode}`);
+    // 3.16.0: матч можно начать с любым составом — 2v1, 3v2 и т.д.
+    if (cs16TeamCount('t') < 1 || cs16TeamCount('ct') < 1) {
+      io.to(socket.id).emit('cs16_err', 'Нужен хотя бы 1 игрок в каждой команде');
       return;
     }
     cs16.scores = { t: 0, ct: 0 }; cs16.round = 0; cs16.winner = null;
@@ -4646,4 +4647,9 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
     await user.save();
     res.json({ success: true, equipped: user.cs16Skin });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+// 3.16.0: версия деплоя — сверка коммита на Render
+app.get('/api/version', (req, res) => {
+  res.json({ version: '3.16.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });
