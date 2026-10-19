@@ -4322,6 +4322,11 @@ function cs16Remove(socket) {
   cs16Broadcast();
 }
 
+// 3.19.4: Support2 — лобби и матч на УРОВНЕ МОДУЛЯ. Раньше лежали внутри io.on('connection'):
+// каждый новый коннект пересоздавал s2lobby, и игроки пропадали друг у друга («На сервере: 1»).
+const s2lobby = { players: new Map() }; // sid -> {nick, team:'r'|'d', hero}
+const s2match = { active: false, hostId: null, roster: [] }; // live-матч, хост фиксируется на старте
+
 io.on('connection', (socket) => {
   socket.on('cs16_join', (nick) => {
     nick = String(nick || '').slice(0, 24);
@@ -4573,9 +4578,7 @@ io.on('connection', (socket) => {
     cs16Broadcast();
   });
 
-  // ============ SUPPORT2 (3.16.1): лобби с местами, сторонами и хостом ============
-  const s2lobby = { players: new Map() }; // sid -> {nick, team:'r'|'d', hero}
-  const s2match = { active: false, hostId: null, roster: [] }; // 3.19.0: live-матч, хост фиксируется на старте
+  // ============ SUPPORT2: лобби и релей матча (состояние s2lobby/s2match — на уровне модуля) ============
   function s2HostId() {
     for (const [id, p] of s2lobby.players.entries()) if (p.nick.toLowerCase() === 'fifflaren') return id;
     return s2lobby.players.keys().next().value || null;
@@ -4750,5 +4753,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '3.19.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '3.19.4', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });
