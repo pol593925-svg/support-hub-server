@@ -4572,6 +4572,56 @@ io.on('connection', (socket) => {
     for (const p of cs16.players.values()) { p.team = null; p.money = 800; p.hp = 100; p.armor = 0; p.alive = true; p.weapon = null; p.kit = false; }
     cs16Broadcast();
   });
+
+  // ============ SUPPORT2 (3.16.1): лобби с местами, сторонами и хостом ============
+  const s2lobby = { players: new Map() }; // sid -> {nick, team:'r'|'d', hero}
+  function s2HostId() {
+    for (const [id, p] of s2lobby.players.entries()) if (p.nick.toLowerCase() === 'fifflaren') return id;
+    return s2lobby.players.keys().next().value || null;
+  }
+  function s2Broadcast() {
+    io.emit('s2_lobby', {
+      players: [...s2lobby.players.entries()].map(([id, p]) => ({ id, nick: p.nick, team: p.team, hero: p.hero })),
+      host: s2HostId(),
+    });
+  }
+  function s2Remove(socket) {
+    if (s2lobby.players.delete(socket.id)) s2Broadcast();
+  }
+  socket.on('s2_join', (nick) => {
+    nick = String(nick || '').slice(0, 24);
+    if (!nick) return;
+    for (const [id, p] of s2lobby.players.entries()) if (p.nick === nick && id !== socket.id) s2lobby.players.delete(id);
+    const prev = s2lobby.players.get(socket.id);
+    s2lobby.players.set(socket.id, { nick, team: prev ? prev.team : null, hero: prev ? prev.hero : null });
+    s2Broadcast();
+  });
+  socket.on('s2_seat', (data) => {
+    const p = s2lobby.players.get(socket.id);
+    if (!p) return;
+    const team = data && (data.team === 'r' || data.team === 'd') ? data.team : null;
+    if (p.team === team) return;
+    const cnt = [...s2lobby.players.values()].filter(x => x.team === team).length;
+    if (team && cnt >= 5) return; // максимум 5 на сторону
+    p.team = team;
+    s2Broadcast();
+  });
+  socket.on('s2_pick', (heroId) => {
+    const p = s2lobby.players.get(socket.id);
+    if (!p) return;
+    p.hero = String(heroId || '').slice(0, 24) || null;
+    s2Broadcast();
+  });
+  socket.on('s2_start', () => {
+    if (socket.id !== s2HostId()) return; // начинает только хост
+    const comp = [...s2lobby.players.values()]
+      .filter(p => p.team && p.hero)
+      .map(p => ({ nick: p.nick, team: p.team, hero: p.hero }));
+    if (!comp.length) return;
+    io.emit('s2_start', { comp });
+  });
+  socket.on('s2_leave', () => s2Remove(socket));
+  socket.on('disconnect', () => { cs16Remove(socket); s2Remove(socket); });
 });
 
 // 3.15.9: сторож бомбы и раундов — даже если setTimeout потерян (сон инстанса и т.п.),
@@ -4649,7 +4699,7 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
-// 3.16.0: версия деплоя — сверка коммита на Render
+// 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '3.16.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '3.16.1', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });
