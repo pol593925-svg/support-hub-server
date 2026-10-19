@@ -4608,7 +4608,16 @@ io.on('connection', (socket) => {
     s2Broadcast();
   });
   socket.on('s2_seat', (data) => {
-    const p = s2lobby.players.get(socket.id);
+    let p = s2lobby.players.get(socket.id);
+    // 3.20.1: саморегистрация — если сессия потерялась (залипший дубль/рестарт), а клиент шлёт ник
+    if (!p && data && data.nick) {
+      const nick = String(data.nick).slice(0, 24);
+      if (nick) {
+        for (const [id2, p2] of s2lobby.players.entries()) if (p2.nick.toLowerCase() === nick.toLowerCase() && id2 !== socket.id) s2lobby.players.delete(id2);
+        p = { nick, team: null, hero: null };
+        s2lobby.players.set(socket.id, p);
+      }
+    }
     if (!p) return;
     const team = data && (data.team === 'r' || data.team === 'd') ? data.team : null;
     if (p.team === team) return;
@@ -4633,6 +4642,17 @@ io.on('connection', (socket) => {
     s2match.hostId = socket.id;
     s2match.roster = comp.map(c => c.nick);
     io.emit('s2_start', { comp });
+  });
+  // 3.20.1: Fifflaren забирает хоста — прерывает чужой матч, все возвращаются в лобби
+  socket.on('s2_take_host', () => {
+    const p = s2lobby.players.get(socket.id);
+    if (!p || p.nick.toLowerCase() !== 'fifflaren') return;
+    if (s2match.active) {
+      s2match.active = false;
+      s2match.hostId = null;
+      io.emit('s2_abort', null); // все клиенты матча возвращаются в лобби (остальные игнорируют)
+    }
+    s2Broadcast();
   });
   // ---------- 3.19.0: релей синхронизации матча (хост-авторитетная модель) ----------
   socket.on('s2_in', (data) => { // ввод игрока → хосту
