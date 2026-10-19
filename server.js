@@ -4575,9 +4575,17 @@ io.on('connection', (socket) => {
 
   // ============ SUPPORT2 (3.16.1): лобби с местами, сторонами и хостом ============
   const s2lobby = { players: new Map() }; // sid -> {nick, team:'r'|'d', hero}
+  const s2match = { active: false, hostId: null, roster: [] }; // 3.19.0: live-матч, хост фиксируется на старте
   function s2HostId() {
     for (const [id, p] of s2lobby.players.entries()) if (p.nick.toLowerCase() === 'fifflaren') return id;
     return s2lobby.players.keys().next().value || null;
+  }
+  function s2ToOthers(event, payload, exceptId) { // 3.19.0: всем в лобби, кроме указанного
+    for (const [id] of s2lobby.players) {
+      if (id === exceptId) continue;
+      const s = io.sockets.sockets.get(id);
+      if (s) s.emit(event, payload);
+    }
   }
   function s2Broadcast() {
     io.emit('s2_lobby', {
@@ -4618,10 +4626,51 @@ io.on('connection', (socket) => {
       .filter(p => p.team && p.hero)
       .map(p => ({ nick: p.nick, team: p.team, hero: p.hero }));
     if (!comp.length) return;
+    s2match.active = true;
+    s2match.hostId = socket.id;
+    s2match.roster = comp.map(c => c.nick);
     io.emit('s2_start', { comp });
   });
-  socket.on('s2_leave', () => s2Remove(socket));
-  socket.on('disconnect', () => { cs16Remove(socket); s2Remove(socket); });
+  // ---------- 3.19.0: релей синхронизации матча (хост-авторитетная модель) ----------
+  socket.on('s2_in', (data) => { // ввод игрока → хосту
+    if (!s2match.active || socket.id === s2match.hostId) return;
+    const p = s2lobby.players.get(socket.id);
+    const host = io.sockets.sockets.get(s2match.hostId);
+    if (p && host) host.emit('s2_in', { nick: p.nick, data });
+  });
+  socket.on('s2_st', (snap) => { // снапшот мира от хоста → остальным
+    if (!s2match.active || socket.id !== s2match.hostId) return;
+    s2ToOthers('s2_st', snap, socket.id);
+  });
+  socket.on('s2_ev', (ev) => { // события/фид/звуки от хоста → остальным
+    if (!s2match.active || socket.id !== s2match.hostId) return;
+    s2ToOthers('s2_ev', ev, socket.id);
+  });
+  socket.on('s2_end', (winner) => { // конец матча
+    if (socket.id !== s2match.hostId) return;
+    s2match.active = false;
+    s2ToOthers('s2_end', winner, socket.id);
+  });
+  // 3.19.0: уход игрока из активного матча Support2 — хост падает (abort), игрока меняет бот
+  function s2MatchLeave(socket) {
+    if (!s2match.active) return;
+    if (socket.id === s2match.hostId) {
+      s2match.active = false;
+      s2ToOthers('s2_abort', null, socket.id);
+    } else {
+      const p = s2lobby.players.get(socket.id);
+      if (p && s2match.roster.includes(p.nick)) {
+        const host = io.sockets.sockets.get(s2match.hostId);
+        if (host) host.emit('s2_left', { nick: p.nick });
+      }
+    }
+  }
+  socket.on('s2_leave', () => { s2MatchLeave(socket); s2Remove(socket); });
+  socket.on('disconnect', () => {
+    cs16Remove(socket);
+    s2MatchLeave(socket);
+    s2Remove(socket);
+  });
 });
 
 // 3.15.9: сторож бомбы и раундов — даже если setTimeout потерян (сон инстанса и т.п.),
@@ -4701,5 +4750,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '3.16.1', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '3.19.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });
