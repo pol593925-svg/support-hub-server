@@ -4744,7 +4744,9 @@ io.on('connection', (socket) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || !d) return;
     if (d.pos) { p.lx = d.pos[0]; p.lz = d.pos[2]; }
-    socket.broadcast.emit('cs16_pos', { nick: p.nick, team: p.team, pos: d.pos, yaw: d.yaw, pitch: d.pitch, weapon: d.weapon, move: d.move });
+    // 3.24.2: скин экипированного оружия уходит другим игрокам (только известные id)
+    const skinId = (d.skin && CS16_SKINS[d.skin]) ? d.skin : '';
+    socket.broadcast.emit('cs16_pos', { nick: p.nick, team: p.team, pos: d.pos, yaw: d.yaw, pitch: d.pitch, weapon: d.weapon, move: d.move, skin: skinId });
   });
 
   // 3.24.0: шаги — ретрансляция (звук чужих шагов по дистанции)
