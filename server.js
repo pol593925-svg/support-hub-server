@@ -4406,6 +4406,9 @@ io.on('connection', (socket) => {
     else {
       dmg = w.dmg * (d.head ? 4 : 1);
       if (d.zone === 'leg') dmg *= 0.7;
+      // 3.23.0: фоллофф урона с дистанцией (AWP не режется)
+      const dist = parseFloat(d.dist) || 0;
+      if (dist > 12) dmg *= Math.max(0.55, 1 - (dist - 12) / 90);
       if (target.armor > 0) dmg = Math.round(dmg * 0.5);
     }
     dmg = Math.min(target.hp, Math.round(dmg));
