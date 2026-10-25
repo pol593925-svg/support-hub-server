@@ -23,6 +23,7 @@ mongoose.connect(MONGO_URI).then(() => {
 
 // Схема пользователя
 const userSchema = new mongoose.Schema({
+  callsSessions: {type:[{hash:String,expiresAt:Date}],default:[],select:false},
   username: { type: String, required: true, unique: true, lowercase: true },
   password: { type: String, required: true },
   role: { type: String, default: 'user' }, // 'admin' или 'user'
@@ -58,6 +59,8 @@ const Team = mongoose.model('Team', teamSchema);
 
 // Схема записи справочника бирж
 const exchangeSchema = new mongoose.Schema({
+  website: {type:String,default:''},
+  logo: {type:String,default:''},
   section: { type: String, enum: ['yes', 'condition', 'no'], required: true },
   name: { type: String, required: true, trim: true },
   condition: { type: String, default: '' }
@@ -310,6 +313,7 @@ app.post('/api/login', async (req, res) => {
       username: user.username,
       role: user.role,
       team: user.team || '',
+      callsToken: await callsService.issue(user),
       isMuted: user.isMuted
     });
   } catch (err) {
@@ -402,6 +406,10 @@ app.get('/api/admin/users', verifyAdmin, async (req, res) => {
 app.post('/api/events', async (req, res) => {
   try {
     const { user, type, date, ...fields } = req.body;
+    if(type==='call'){
+      const sender=await User.findOne({username:String(user||'').trim().toLowerCase()});
+      fields.teamAtSubmission=String(sender?.team||'').trim().toLowerCase();
+    }
     if (!type) {
       return res.status(400).json({ success: false, message: 'Не указан тип события' });
     }
@@ -423,6 +431,7 @@ app.post('/api/events', async (req, res) => {
     });
 
     await event.save();
+    if(type==='call')callsService.notify(event).catch(error=>console.error('Call notification failed:',error.message));
 
     // Уведомляем ТЛ команды: ТЛ — пользователь, чей ник совпадает с названием команды
     if (['call', 'leave', 'shift', 'bug', 'question'].includes(String(type))) {
@@ -851,6 +860,15 @@ app.get('/api/exchanges', async (req, res) => {
 });
 
 // Добавить запись (админ): section = 'yes' | 'condition' | 'no'
+app.post('/api/admin/exchanges/media',verifyAdmin,async(req,res)=>{
+  try{
+    const {section,name,website,logo}=req.body;
+    const safe=value=>{try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password;}catch{return false;}};
+    if(!['yes','condition','no'].includes(section)||typeof name!=='string'||!name.trim()||!safe(website)||(logo&&!safe(logo)))return res.status(400).json({success:false,message:'Проверь название и HTTPS-ссылки'});
+    await Exchange.updateOne({section,name:name.trim()},{$set:{website,logo:logo||''},$setOnInsert:{section,name:name.trim(),condition:String(req.body.condition||'')}},{upsert:true});
+    res.json({success:true});
+  }catch(error){res.status(500).json({success:false,message:error.message});}
+});
 app.post('/api/admin/exchanges', verifyAdmin, async (req, res) => {
   try {
     const { section, name, condition } = req.body;
@@ -1276,6 +1294,7 @@ const io = new Server(server, {
 });
 
 // Список активных пользователей в чате
+const callsService=require('./calls-service')({app,io,User,Event});
 let onlineUsers = new Map(); // socket.id -> nick
 
 io.on('connection', (socket) => {
