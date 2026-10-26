@@ -4202,6 +4202,7 @@ app.post('/api/casino/rr/pull', async (req, res) => {
 
 // ==================== 3.15.0: КС 1.6 — de_dust2 (5x5..1x1, до 16 побед) ====================
 // Одна комната на всех: лобби → распределение по командам → старт первым зашедшим → раунды.
+const CS16Combat = require('./cs16-combat');
 const CS16_W = {
   knife:   { price: 0,    dmg: 40,  reward: 1500 },
   glock:   { price: 0,    dmg: 25,  reward: 300 },
@@ -4417,19 +4418,12 @@ function cs16Spawn(team, index, total) {
 
 // 3.24.0: единый подсчёт урона и убийств (игроки и боты)
 function cs16ApplyHit(attacker, target, weapon, head, zone, dist, heavy) {
-  const w = CS16_W[weapon] || CS16_W.usp;
-  let dmg;
-  if (weapon === 'knife') dmg = heavy ? 55 : 40;
-  else if (weapon === 'awp' && zone !== 'leg') dmg = 200;
-  else {
-    dmg = w.dmg * (head ? 4 : 1);
-    if (zone === 'leg') dmg *= 0.7;
-    if (dist > 12) dmg *= Math.max(0.55, 1 - (dist - 12) / 90);
-    if (target.armor > 0) dmg = Math.round(dmg * 0.5);
-  }
-  dmg = Math.min(target.hp, Math.round(dmg));
+  const result = CS16Combat.damage(weapon,head?'head':zone,dist,target.armor,heavy);
+  if (!result.damage) return;
+  const dmg = Math.min(target.hp,result.damage);
+  target.armor = Math.max(0,target.armor-result.armorUsed);
   target.hp -= dmg;
-  io.emit('cs16_hit', { target: target.nick, hp: target.hp, dmg, head: !!head, by: attacker ? attacker.nick : null });
+  io.emit('cs16_hit', { target: target.nick, hp: target.hp, armor:target.armor, dmg, head: !!head, by: attacker ? attacker.nick : null });
   if (target.hp <= 0) {
     target.alive = false; target.deaths += 1;
     if (attacker) attacker.kills += 1;
@@ -4765,7 +4759,7 @@ io.on('connection', (socket) => {
     if (d.pos) { p.lx = d.pos[0]; p.lz = d.pos[2]; }
     // 3.24.2: скин экипированного оружия уходит другим игрокам (только известные id)
     const skinId = (d.skin && CS16_SKINS[d.skin]) ? d.skin : '';
-    socket.broadcast.emit('cs16_pos', { nick: p.nick, team: p.team, pos: d.pos, yaw: d.yaw, pitch: d.pitch, weapon: d.weapon, move: d.move, skin: skinId });
+    socket.broadcast.emit('cs16_pos', { nick: p.nick, team: p.team, pos: d.pos, yaw: d.yaw, pitch: d.pitch, weapon: d.weapon, move: d.move, crouched: !!d.crouched, skin: skinId });
   });
 
   // 3.24.0: шаги — ретрансляция (звук чужих шагов по дистанции)
@@ -4778,7 +4772,8 @@ io.on('connection', (socket) => {
   socket.on('cs16_shoot', (d) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || cs16.phase !== 'live' || !d) return;
-    socket.broadcast.emit('cs16_shoot', { nick: p.nick, origin: d.origin, dir: d.dir, weapon: d.weapon });
+    if (!CS16Combat.weapons[d.weapon] || !Array.isArray(d.origin) || !Array.isArray(d.dir) || d.origin.length!==3 || d.dir.length!==3 || ![...d.origin,...d.dir].every(Number.isFinite)) return;
+    socket.broadcast.emit('cs16_shoot', { nick: p.nick, origin: d.origin, dir: d.dir, weapon: d.weapon, distance:Number.isFinite(d.distance)?Math.max(0,Math.min(200,d.distance)):60 });
   });
 
   socket.on('cs16_hit', (d) => {
@@ -4787,7 +4782,13 @@ io.on('connection', (socket) => {
     const target = [...cs16.players.values()].find(x => x.nick.toLowerCase() === String(d.target || '').toLowerCase());
     if (!target || !target.alive) return;
     if (cs16.gm !== 'gg' && target.team === p.team) return; // фф выключен (в GG — все против всех)
-    cs16ApplyHit(p, target, d.weapon, d.head, d.zone, parseFloat(d.dist) || 0, !!d.heavy);
+    const weapon = CS16Combat.weapons[d.weapon], distance = Number(d.dist);
+    if (!weapon || !Number.isFinite(distance) || distance<0 || distance>200 || (d.weapon==='knife'&&distance>2.85)) return;
+    const interval = d.weapon==='knife'?(d.heavy?900:750):(d.weapon==='glock'||d.weapon==='famas'?75:60000/weapon.rpm);
+    const now = Date.now();
+    if (p.lastRegisteredHit && now-p.lastRegisteredHit<interval*.75) return;
+    p.lastRegisteredHit=now;
+    cs16ApplyHit(p,target,d.weapon,!!d.head,['head','body','leg'].includes(d.zone)?d.zone:'body',distance,!!d.heavy);
   });
 
   // Граната: ретрансляция полёта + серверный подсчёт урона при взрыве
@@ -5148,5 +5149,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '3.19.4', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '3.30.0', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });
