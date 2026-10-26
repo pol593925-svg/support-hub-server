@@ -4644,6 +4644,11 @@ function cs16OnKill(attacker, target, weapon) {
 
 // 3.31.0: AoE пушки танка и ракет вертолёта — урон по врагам в радиусе 6м (по своим нельзя)
 function cs16VehBoom(attacker, pos, weapon) {
+  for(const target of cs16.players.values()){
+    if(!target.veh||target===attacker||(cs16.gm!=='gg'&&target.team===attacker.team))continue;
+    const vp=target.veh.pos;if(!vp||Math.hypot(vp[0]-pos[0],vp[1]+1-pos[1],vp[2]-pos[2])>6)continue;
+    target.veh.hp-=120;if(target.veh.hp<=0)cs16VehDestroy(target,attacker,vp);else io.emit('cs16_vehhit',{target:target.nick,hp:target.veh.hp,max:target.veh.max,kind:target.veh.kind});
+  }
   for (const target of cs16.players.values()) {
     if (!target.alive || !target.team || target === attacker) continue;
     if (cs16.gm !== 'gg' && target.team === attacker.team) continue;
@@ -4665,12 +4670,6 @@ function cs16VehBoom(attacker, pos, weapon) {
       cs16OnKill(attacker, target, weapon);
       cs16CheckWipe();
     }
-    // 3.32.0: вражеская техника рядом с эпицентром тоже получает урон
-    if (target.veh) {
-      target.veh.hp -= 120;
-      if (target.veh.hp <= 0) cs16VehDestroy(target, attacker, pos);
-      else io.emit('cs16_vehhit', { target: target.nick, hp: target.veh.hp, max: target.veh.max, kind: target.veh.kind });
-    }
   }
   cs16Broadcast();
 }
@@ -4679,9 +4678,9 @@ function cs16VehBoom(attacker, pos, weapon) {
 function cs16VehDestroy(owner, attacker, pos) {
   const kind = owner.veh && owner.veh.kind;
   if (!kind) return;
-  owner.veh = null;
-  io.emit('cs16_vehdie', { by: owner.nick, kind, pos: pos || [owner.lx || 0, 0, owner.lz || 0] });
-  if (!owner.alive) { cs16Broadcast(); return; }
+  const vehicle=owner.veh;owner.veh = null;
+  io.emit('cs16_vehdie', { by: owner.nick, kind, pos:vehicle.pos || pos || [owner.lx || 0,0,owner.lz || 0] });
+  if (!owner.alive || !vehicle.inside) { cs16Broadcast(); return; }
   let dmg = 70;
   if (owner.armor > 0) dmg = Math.round(dmg * 0.5);
   dmg = Math.min(owner.hp, dmg);
@@ -5063,7 +5062,9 @@ io.on('connection', (socket) => {
   socket.on('cs16_veh', (d) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || !d || !d.pos) return;
-    socket.broadcast.emit('cs16_veh', { kind: d.kind === 'heli' ? 'heli' : 'tank', pos: d.pos, yaw: +d.yaw || 0, turret: +d.turret || 0, by: p.nick });
+    if(!p.veh||!Array.isArray(d.pos)||d.pos.length!==3||!d.pos.every(Number.isFinite))return;
+    p.veh.pos=d.pos.slice();p.veh.inside=!!d.inside;
+    socket.broadcast.emit('cs16_veh', { kind:p.veh.kind, pos:d.pos,yaw:+d.yaw||0,turret:+d.turret||0,by:p.nick,hp:p.veh.hp,max:p.veh.max });
   });
   socket.on('cs16_vehboom', (d) => {
     const p = cs16.players.get(socket.id);
