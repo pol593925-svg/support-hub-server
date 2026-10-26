@@ -12,7 +12,10 @@
     awp:[115,.97,.99,41,3.2], mp5:[26,.62,.84,750,.14], p90:[26,.69,.86,900,.18],
     ump45:[35,.65,.80,666,.13], galil:[30,.77,.98,675,.10], famas:[30,.70,.96,675,.09],
     scout:[88,.85,.98,48,2.8], sg552:[30,.95,.98,666,.08], aug:[28,.90,.98,666,.07],
-    m249:[32,.80,.97,750,.18], fiveseven:[32,.91,.88,400,.12], tec9:[33,.90,.85,500,.15], elite:[38,.57,.85,750,.17]
+    m249:[32,.80,.97,750,.18], fiveseven:[32,.91,.88,400,.12], tec9:[33,.90,.85,500,.15], elite:[38,.57,.85,750,.17],
+    // 3.31.0: оружие техники (только серверная копия! в клиентскую не добавлять —
+    // клиентский cs16.js делает Object.assign(WEAPONS[id], profile) и упадёт на отсутствующем id)
+    mgveh:[20,.60,.95,600,.05], tankgun:[90,.90,.90,30,0]
   };
   const weapons = Object.freeze(Object.assign(Object.create(null),Object.fromEntries(Object.entries(values).map(([id,v]) => [id,Object.freeze({dmg:v[0],penetration:v[1],rangeModifier:v[2],rpm:v[3],spread:v[4]})]))));
   function damage(id, zone, distance, armor, heavy=false) {
