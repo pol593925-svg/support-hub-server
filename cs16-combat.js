@@ -64,4 +64,5 @@
     if(body!==null)return {t:body,head:false,zone:o[1]+d[1]*body<y+.8*scale?'leg':'body'};
     return null;
   }
-  return Object.freeze
+  return Object.freeze({weapons,damage,spread,direction,playerHit,SMOKE_RADIUS:5.5,SMOKE_DURATION:22000});
+});
