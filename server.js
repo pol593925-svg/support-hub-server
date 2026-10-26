@@ -4665,6 +4665,40 @@ function cs16VehBoom(attacker, pos, weapon) {
       cs16OnKill(attacker, target, weapon);
       cs16CheckWipe();
     }
+    // 3.32.0: вражеская техника рядом с эпицентром тоже получает урон
+    if (target.veh) {
+      target.veh.hp -= 120;
+      if (target.veh.hp <= 0) cs16VehDestroy(target, attacker, pos);
+      else io.emit('cs16_vehhit', { target: target.nick, hp: target.veh.hp, max: target.veh.max, kind: target.veh.kind });
+    }
+  }
+  cs16Broadcast();
+}
+
+// 3.32.0: подбитие техники — взрыв-фейерверк + 70 урона владельцу (пилоту)
+function cs16VehDestroy(owner, attacker, pos) {
+  const kind = owner.veh && owner.veh.kind;
+  if (!kind) return;
+  owner.veh = null;
+  io.emit('cs16_vehdie', { by: owner.nick, kind, pos: pos || [owner.lx || 0, 0, owner.lz || 0] });
+  if (!owner.alive) { cs16Broadcast(); return; }
+  let dmg = 70;
+  if (owner.armor > 0) dmg = Math.round(dmg * 0.5);
+  dmg = Math.min(owner.hp, dmg);
+  if (dmg > 0) {
+    owner.hp -= dmg;
+    io.emit('cs16_hit', { target: owner.nick, hp: owner.hp, dmg, head: false, by: attacker ? attacker.nick : null });
+    if (owner.hp <= 0) {
+      owner.alive = false; owner.deaths += 1; owner.armor = 0; owner.weapon = null; owner.kit = false;
+      if (attacker) {
+        attacker.kills += 1; attacker.money = Math.min(16000, attacker.money + 1000);
+        cs16StatAdd(attacker.nick, 'kill');
+      }
+      cs16StatAdd(owner.nick, 'death');
+      io.emit('cs16_death', { nick: owner.nick, killer: attacker ? attacker.nick : null, weapon: kind, head: false });
+      if (attacker) cs16OnKill(attacker, owner, kind);
+      cs16CheckWipe();
+    }
   }
   cs16Broadcast();
 }
@@ -4767,7 +4801,7 @@ function cs16StartRound() {
   cs16.buyUntil = now + 6000 + 15000;
   let ti = 0, ci = 0;
   for (const p of cs16.players.values()) {
-    p.alive = true; p.hp = 100;
+    p.alive = true; p.hp = 100; p.veh = null; // 3.32.0: техника не переживает раунд
     if (cs16.gm === 'gg') { p.ggIdx = 0; p.weapon = CS16_GG_LADDER[0]; }
     else if (!p.weapon) p.weapon = p.team === 't' ? 'glock' : 'usp';
     p.money = Math.min(16000, p.money + 500); // 3.15.5: доход каждый раунд
@@ -4845,7 +4879,7 @@ function cs16EndMatch(winner) {
   });
   cs16Later(() => {
     cs16.phase = 'lobby'; cs16.round = 0; cs16.scores = { t: 0, ct: 0 }; cs16.winner = null; cs16.swapped = false;
-    for (const p of cs16.players.values()) { p.team = null; p.money = 800; p.weapon = null; p.hp = 100; p.alive = true; p.ggIdx = 0; }
+    for (const p of cs16.players.values()) { p.team = null; p.money = 800; p.weapon = null; p.hp = 100; p.alive = true; p.ggIdx = 0; p.veh = null; }
     cs16Broadcast();
   }, 12000);
 }
@@ -5038,6 +5072,32 @@ io.on('connection', (socket) => {
     cs16VehBoom(p, d.pos, 'tankgun');
   });
 
+  socket.on('cs16_vehhit', (d) => {
+    const p = cs16.players.get(socket.id);
+    if (!p || !p.alive || cs16.phase !== 'live' || !d) return;
+    const target = [...cs16.players.values()].find(x => x.nick.toLowerCase() === String(d.target || '').toLowerCase());
+    if (!target || !target.veh) return;
+    if (cs16.gm !== 'gg' && target.team === p.team) return;
+    const weapon = CS16Combat.weapons[d.weapon];
+    if (!weapon) return;
+    const now = Date.now();
+    if (now - (p.lastVehHit || 0) < 60000 / weapon.rpm * 0.85) return; // та же скорострельность, что у оружия
+    p.lastVehHit = now;
+    target.veh.hp -= CS16Combat.damage(d.weapon, 'body', 0, 0).damage;
+    if (target.veh.hp <= 0) { cs16VehDestroy(target, p); return; }
+    io.emit('cs16_vehhit', { target: target.nick, hp: target.veh.hp, max: target.veh.max, kind: target.veh.kind });
+  });
+  // 3.32.0: танк снёс ящик — ретрансляция всем (визуальный развал + локальная коллизия)
+  socket.on('cs16_vehcrate', (d) => {
+    const p = cs16.players.get(socket.id);
+    if (!p || !p.alive || !d) return;
+    const grid = CS16_GRID[cs16.map] || CS16_GRID.dust2;
+    const cx = parseInt(d.x), cy = parseInt(d.y);
+    if (!Number.isFinite(cx) || !Number.isFinite(cy) || cy < 0 || cx < 0 || cy >= grid.length || cx >= grid[0].length) return;
+    if (grid[cy][cx] !== 2 && grid[cy][cx] !== 3) return; // только ящики (D/C)
+    socket.broadcast.emit('cs16_vehcrate', { x: cx, y: cy });
+  });
+
   socket.on('cs16_buy', (item) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive) return;
@@ -5051,7 +5111,7 @@ io.on('connection', (socket) => {
     if (p.money < w.price) { io.to(socket.id).emit('cs16_err', 'Не хватает денег'); return; }
     if (item === 'kevlar') { if (p.armor >= 100) return; p.armor = 100; }
     else if (item === 'defuser') { if (p.kit) return; p.kit = true; }
-    else if (item === 'veh_tank' || item === 'veh_heli') { /* 3.31.0: техника — клиент заспавнит рядом с игроком */ }
+    else if (item === 'veh_tank' || item === 'veh_heli') { p.veh = { kind: item === 'veh_heli' ? 'heli' : 'tank', hp: item === 'veh_heli' ? 600 : 1000, max: item === 'veh_heli' ? 600 : 1000 }; } // 3.32.0: у техники HP
     else if (item === 'hegrenade' || item === 'flashbang' || item === 'smokegrenade') { /* гранаты — клиент считает лимит */ }
     else p.weapon = item;
     p.money -= w.price;
