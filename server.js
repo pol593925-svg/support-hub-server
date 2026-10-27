@@ -4930,10 +4930,11 @@ io.on('connection', (socket) => {
     for (const [id, p] of cs16.players.entries()) {
       if (p.nick.toLowerCase() === nick.toLowerCase() && id !== socket.id) cs16.players.delete(id);
     }
-    socket.emit('cs16_props',{map:cs16.map,ids:[...cs16BrokenProps],snapshot:true});
+
     cs16.players.set(socket.id, { nick, team: null, money: 800, hp: 100, armor: 0, alive: true, kills: 0, deaths: 0, weapon: null, kit: false, lossStreak: 0, joinedAt: Date.now() });
     cs16Personal(socket.id);
     cs16Broadcast();
+    socket.emit('cs16_props',{map:cs16.map,ids:[...cs16BrokenProps],snapshot:true});
   });
 
   socket.on('cs16_team', (team) => {
