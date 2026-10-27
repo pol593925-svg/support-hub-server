@@ -4203,6 +4203,7 @@ app.post('/api/casino/rr/pull', async (req, res) => {
 // ==================== 3.15.0: КС 1.6 — de_dust2 (5x5..1x1, до 16 побед) ====================
 // Одна комната на всех: лобби → распределение по командам → старт первым зашедшим → раунды.
 const CS16Combat = require('./cs16-combat');
+const CS16Vehicles = require('./cs16-vehicles');
 const CS16_W = {
   knife:   { price: 0,    dmg: 40,  reward: 1500 },
   glock:   { price: 0,    dmg: 25,  reward: 300 },
@@ -4231,6 +4232,8 @@ const CS16_W = {
   defuser:   { price: 200, team: 'ct' }, // набор сапёра
   // 3.31.0: техника (покупка) и её оружие
   veh_tank:  { price: 4000 },
+  veh_bastion: {price:5500},
+  veh_storm: {price:5500},
   veh_heli:  { price: 4000 },
   mgveh:     { price: 0, dmg: 20, reward: 300 },   // пулемёт вертолёта
   tankgun:   { price: 0, dmg: 90, reward: 300 },   // пушка танка / ракеты (AoE)
@@ -4678,9 +4681,10 @@ function cs16VehBoom(attacker, pos, weapon) {
 function cs16VehDestroy(owner, attacker, pos) {
   const kind = owner.veh && owner.veh.kind;
   if (!kind) return;
-  const vehicle=owner.veh;owner.veh = null;
+  const vehicle=owner.veh;const crew=[...cs16.players.values()].filter(p=>p.vehSeat===owner.nick);for(const p of crew)p.vehSeat=null;owner.veh = null;
   io.emit('cs16_vehdie', { by: owner.nick, kind, pos:vehicle.pos || pos || [owner.lx || 0,0,owner.lz || 0] });
-  if (!owner.alive || !vehicle.inside) { cs16Broadcast(); return; }
+  const occupants=crew.concat(vehicle.inside?[owner]:[]);
+  for(const owner of occupants){if(!owner.alive)continue;
   let dmg = 70;
   if (owner.armor > 0) dmg = Math.round(dmg * 0.5);
   dmg = Math.min(owner.hp, dmg);
@@ -4698,6 +4702,7 @@ function cs16VehDestroy(owner, attacker, pos) {
       if (attacker) cs16OnKill(attacker, owner, kind);
       cs16CheckWipe();
     }
+  }
   }
   cs16Broadcast();
 }
@@ -4800,7 +4805,7 @@ function cs16StartRound() {
   cs16.buyUntil = now + 6000 + 15000;
   let ti = 0, ci = 0;
   for (const p of cs16.players.values()) {
-    p.alive = true; p.hp = 100; p.veh = null; // 3.32.0: техника не переживает раунд
+    p.alive = true; p.hp = 100; p.vehSeat=null; p.veh = null; // 3.32.0: техника не переживает раунд
     if (cs16.gm === 'gg') { p.ggIdx = 0; p.weapon = CS16_GG_LADDER[0]; }
     else if (!p.weapon) p.weapon = p.team === 't' ? 'glock' : 'usp';
     p.money = Math.min(16000, p.money + 500); // 3.15.5: доход каждый раунд
@@ -4878,7 +4883,7 @@ function cs16EndMatch(winner) {
   });
   cs16Later(() => {
     cs16.phase = 'lobby'; cs16.round = 0; cs16.scores = { t: 0, ct: 0 }; cs16.winner = null; cs16.swapped = false;
-    for (const p of cs16.players.values()) { p.team = null; p.money = 800; p.weapon = null; p.hp = 100; p.alive = true; p.ggIdx = 0; p.veh = null; }
+    for (const p of cs16.players.values()) { p.team = null; p.money = 800; p.weapon = null; p.hp = 100; p.alive = true; p.ggIdx = 0; p.veh = null; p.vehSeat=null; }
     cs16Broadcast();
   }, 12000);
 }
@@ -4989,7 +4994,7 @@ io.on('connection', (socket) => {
   socket.on('cs16_pos', (d) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || !d) return;
-    if (d.pos) { p.lx = d.pos[0]; p.lz = d.pos[2]; }
+    if (d.pos) { p.lx = d.pos[0]; p.ly=d.pos[1]; p.lz = d.pos[2]; }
     // 3.24.2: скин экипированного оружия уходит другим игрокам (только известные id)
     const skinId = (d.skin && CS16_SKINS[d.skin]) ? d.skin : '';
     socket.broadcast.emit('cs16_pos', { nick: p.nick, team: p.team, pos: d.pos, yaw: d.yaw, pitch: d.pitch, weapon: d.weapon, move: d.move, crouched: !!d.crouched, skin: skinId });
@@ -5005,6 +5010,7 @@ io.on('connection', (socket) => {
   socket.on('cs16_shoot', (d) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || cs16.phase !== 'live' || !d) return;
+    if(['mgveh','tankgun'].includes(d.weapon)&&!CS16Vehicles.active(cs16.players,p))return;
     if (!CS16Combat.weapons[d.weapon] || !Array.isArray(d.origin) || !Array.isArray(d.dir) || d.origin.length!==3 || d.dir.length!==3 || ![...d.origin,...d.dir].every(Number.isFinite)) return;
     socket.broadcast.emit('cs16_shoot', { nick: p.nick, origin: d.origin, dir: d.dir, weapon: d.weapon, distance:Number.isFinite(d.distance)?Math.max(0,Math.min(200,d.distance)):60 });
   });
@@ -5015,6 +5021,7 @@ io.on('connection', (socket) => {
     const target = [...cs16.players.values()].find(x => x.nick.toLowerCase() === String(d.target || '').toLowerCase());
     if (!target || !target.alive) return;
     if (cs16.gm !== 'gg' && target.team === p.team) return; // фф выключен (в GG — все против всех)
+    if(['mgveh','tankgun'].includes(d.weapon)&&!CS16Vehicles.active(cs16.players,p))return;
     const weapon = CS16Combat.weapons[d.weapon], distance = Number(d.dist);
     if (!weapon || !Number.isFinite(distance) || distance<0 || distance>200 || (d.weapon==='knife'&&distance>2.85)) return;
     const interval = d.weapon==='knife'?(d.heavy?900:750):(d.weapon==='glock'||d.weapon==='famas'?75:60000/weapon.rpm);
@@ -5059,16 +5066,27 @@ io.on('connection', (socket) => {
   });
 
   // 3.31.0: техника — ретрансляция позиции/башни всем и взрывы пушки/ракет (AoE на сервере)
+  socket.on('cs16_crew',d=>{
+    const p=cs16.players.get(socket.id);if(!p||!d)return;
+    if(Number.isFinite(d.aim)){if(CS16Vehicles.active(cs16.players,p)&&p.vehSeat)socket.broadcast.emit('cs16_crew',{nick:p.nick,owner:p.vehSeat,aim:d.aim});return;}
+    if(d.leave){CS16Vehicles.leave(cs16.players,p);io.emit('cs16_crew',{nick:p.nick,owner:null});return;}
+    if(!['live','freeze'].includes(cs16.phase))return;
+    const error=CS16Vehicles.join(cs16.players,p,d.owner);
+    if(error){socket.emit('cs16_err',error);return;}
+    io.emit('cs16_crew',{nick:p.nick,owner:p.vehSeat});
+  });
   socket.on('cs16_veh', (d) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || !d || !d.pos) return;
     if(!p.veh||!Array.isArray(d.pos)||d.pos.length!==3||!d.pos.every(Number.isFinite))return;
-    p.veh.pos=d.pos.slice();p.veh.inside=!!d.inside;
-    socket.broadcast.emit('cs16_veh', { kind:p.veh.kind, pos:d.pos,yaw:+d.yaw||0,turret:+d.turret||0,by:p.nick,hp:p.veh.hp,max:p.veh.max });
+    CS16Vehicles.clean(cs16.players);p.veh.pos=d.pos.slice();p.veh.inside=!!d.inside;
+    socket.broadcast.emit('cs16_veh', { kind:p.veh.kind, variant:p.veh.variant||p.veh.kind,team:p.team,passenger:p.veh.passenger||null,pos:d.pos,yaw:+d.yaw||0,turret:+d.turret||0,by:p.nick,hp:p.veh.hp,max:p.veh.max });
   });
   socket.on('cs16_vehboom', (d) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || cs16.phase !== 'live' || !d || !d.pos) return;
+    if(!CS16Vehicles.active(cs16.players,p)||!Array.isArray(d.pos)||d.pos.length!==3||!d.pos.every(Number.isFinite))return;
+    if(Date.now()-(p.lastVehBoom||0)<200)return;p.lastVehBoom=Date.now();
     io.emit('cs16_vehboom', { pos: d.pos, kind: d.kind === 'rocket' ? 'rocket' : 'tank', by: p.nick });
     cs16VehBoom(p, d.pos, 'tankgun');
   });
@@ -5079,6 +5097,7 @@ io.on('connection', (socket) => {
     const target = [...cs16.players.values()].find(x => x.nick.toLowerCase() === String(d.target || '').toLowerCase());
     if (!target || !target.veh) return;
     if (cs16.gm !== 'gg' && target.team === p.team) return;
+    if(['mgveh','tankgun'].includes(d.weapon)&&!CS16Vehicles.active(cs16.players,p))return;
     const weapon = CS16Combat.weapons[d.weapon];
     if (!weapon) return;
     const now = Date.now();
@@ -5112,7 +5131,7 @@ io.on('connection', (socket) => {
     if (p.money < w.price) { io.to(socket.id).emit('cs16_err', 'Не хватает денег'); return; }
     if (item === 'kevlar') { if (p.armor >= 100) return; p.armor = 100; }
     else if (item === 'defuser') { if (p.kit) return; p.kit = true; }
-    else if (item === 'veh_tank' || item === 'veh_heli') { p.veh = { kind: item === 'veh_heli' ? 'heli' : 'tank', hp: item === 'veh_heli' ? 600 : 1000, max: item === 'veh_heli' ? 600 : 1000 }; } // 3.32.0: у техники HP
+    else if (item.startsWith('veh_') && CS16Vehicles.types[item.slice(4)]) { if(p.veh||p.vehSeat){io.to(socket.id).emit('cs16_err','У тебя уже есть техника или занято место стрелка');return;} const variant=item.slice(4),v=CS16Vehicles.types[variant];p.veh = { kind:v.kind,variant,hp:v.hp,max:v.hp }; }
     else if (item === 'hegrenade' || item === 'flashbang' || item === 'smokegrenade') { /* гранаты — клиент считает лимит */ }
     else p.weapon = item;
     p.money -= w.price;
