@@ -1,0 +1,19 @@
+const test=require('node:test'),assert=require('node:assert/strict'),CQ=require('./cs16-conquest');
+function fixture(){const grid=Array.from({length:126},()=>Array(126).fill(0)),t={nick:'T',team:'t',alive:true,hp:100,money:5000,lx:10,ly:0,lz:10},ct={nick:'CT',team:'ct',alive:true,hp:100,money:5000,lx:490,ly:0,lz:490},state={gm:'cq',phase:'freeze',freezeEnds:6000,players:new Map([['t',t],['ct',ct]])},events=[],blasts=[];
+const controller=CQ.create({state,grid:()=>grid,emit:(n,d)=>events.push({n,d}),personal(){},spawn:()=>[10,1.6,10],finish:w=>{state.winner=w;state.phase='matchend';},blast:(p,pos)=>blasts.push(pos)});controller.start(0);state.phase='live';return {controller,state,t,ct,events,blasts,grid};}
+test('five distinct flags, eight-second capture, contest, income and altitude',()=>{const f=fixture();assert.equal(f.state.cq.flags.length,5);assert.equal(new Set(f.state.cq.flags.map(x=>x.x+','+x.z)).size,5);const flag=f.state.cq.flags[0];f.t.lx=flag.x;f.t.lz=flag.z;
+for(let now=7000;now<=14000;now+=1000)f.controller.tick(now);assert.equal(flag.owner,'t');assert.equal(f.t.money,5750);f.controller.tick(16000);assert.equal(f.t.money,5950);
+const next=f.state.cq.flags[1];f.t.lx=f.ct.lx=next.x;f.t.lz=f.ct.lz=next.z;f.controller.tick(17000);assert.equal(next.contested,true);assert.equal(next.progress,0);f.ct.lx=490;f.t.ly=80;f.controller.tick(18000);assert.equal(next.progress,0,'high aircraft cannot capture');
+});
+test('respawn at four seconds; duplicate kill ignored; 50 kills or 10 minutes finishes',()=>{const f=fixture();assert.equal(f.state.roundEnds,606000);f.ct.alive=false;f.controller.killed(f.t,f.ct,17000);f.controller.killed(f.t,f.ct,17001);assert.equal(f.state.scores.t,1);f.controller.tick(20000);assert(!f.ct.alive);f.controller.tick(21000);assert(f.ct.alive);assert.equal(f.ct.cqProtectedUntil,22800);assert(f.events.some(e=>e.n==='cs16_cq_respawn'));
+f.controller.tick(606000);assert.equal(f.state.phase,'matchend');assert.equal(f.state.winner,'t');const k=fixture();k.state.scores.t=49;k.ct.alive=false;k.controller.killed(k.t,k.ct,9000);assert.equal(k.state.winner,'t');assert.equal(k.state.scores.t,50);
+});
+test('artillery costs exactly 2000, rejects invalid sectors/cooldowns and schedules 12 impacts',()=>{const f=fixture();assert(f.controller.artillery(f.t,{x:NaN,z:30},20000));assert.equal(f.t.money,5000);assert.equal(f.controller.artillery(f.t,{x:250,z:250},20000),null);assert.equal(f.t.money,3000);assert(f.controller.artillery(f.t,{x:250,z:250},21000));assert.equal(f.t.money,3000);const event=f.events.find(e=>e.n==='cs16_artillery');assert.equal(event.d.shots.length,12);f.controller.tick(22000);assert.equal(f.blasts.length,0);f.controller.tick(23000);assert.equal(f.blasts.length,2);f.controller.tick(27000);assert.equal(f.blasts.length,12);
+f.state.phase='matchend';assert(f.controller.artillery(f.t,{x:250,z:250},70000));assert.equal(f.t.money>=3000,true);
+});
+test('server auto-restarts conquest with teams retained and rejects planting',()=>{
+ const fs=require('node:fs'),vm=require('node:vm'),source=fs.readFileSync(__dirname+'/server.js','utf8'),f=fixture();let later,started=0;
+ const context={cs16:f.state,cs16ClearTimers(){},cs16StatAdd(){},cs16StatsFlush(){},cs16Broadcast(){},cs16LvlOf:()=>1,io:{emit(){}},cs16Later:fn=>later=fn,cs16TeamCount:team=>[...f.state.players.values()].filter(p=>p.team===team).length,cs16StartRound:()=>started++};
+ vm.runInNewContext(source.slice(source.indexOf('function cs16EndMatch('),source.indexOf('function cs16CheckWipe(')),context);context.cs16EndMatch('t');later();assert.equal(started,1);assert.equal(f.t.team,'t');assert.equal(f.ct.team,'ct');
+ let plant;f.state.phase='live';f.state.bomb=null;vm.runInNewContext(source.slice(source.indexOf("  socket.on('cs16_plant',"),source.indexOf("  socket.on('cs16_defuse',")),{socket:{id:'t',on:(_,fn)=>plant=fn},cs16:f.state});plant({site:'A',pos:[10,0,10]});assert.equal(f.state.bomb,null);
+});
