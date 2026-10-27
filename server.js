@@ -407,6 +407,9 @@ app.post('/api/events', async (req, res) => {
   try {
     const { user, type, date, ...fields } = req.body;
     if(type==='call'){
+      fields.reviewStatus='pending';fields.reviewReason='';delete fields.reviewedAt;delete fields.reviewedBy;
+      const token=String(req.headers.authorization||'').replace(/^Bearer /,'');
+      if(token){const actor=await callsService.actor(token);if(!actor||actor.username.toLowerCase()!==String(user||'').trim().toLowerCase())return res.status(403).json({success:false,message:'Войди заново для отправки колла.'});}
       const sender=await User.findOne({username:String(user||'').trim().toLowerCase()});
       fields.teamAtSubmission=String(sender?.team||'').trim().toLowerCase();
     }
@@ -4204,6 +4207,10 @@ app.post('/api/casino/rr/pull', async (req, res) => {
 // Одна комната на всех: лобби → распределение по командам → старт первым зашедшим → раунды.
 const CS16Combat = require('./cs16-combat');
 const CS16Vehicles = require('./cs16-vehicles');
+const CS16Props=require('./cs16-props');
+const cs16BrokenProps=new Set();
+let cs16PropsCache=null;
+function cs16Field(){if(!cs16PropsCache||cs16PropsCache.map!==cs16.map)cs16PropsCache={map:cs16.map,items:CS16Props.generate(CS16_GRID[cs16.map]||CS16_GRID.dust2,cs16.map)};return cs16PropsCache.items;}
 const CS16_W = {
   knife:   { price: 0,    dmg: 40,  reward: 1500 },
   glock:   { price: 0,    dmg: 25,  reward: 300 },
@@ -4796,6 +4803,7 @@ function cs16BotStep(p, ux, uz, grid) {
 }
 
 function cs16StartRound() {
+  cs16BrokenProps.clear();
   cs16ClearTimers();
   cs16.round += 1;
   cs16.bomb = null;
@@ -4922,6 +4930,7 @@ io.on('connection', (socket) => {
     for (const [id, p] of cs16.players.entries()) {
       if (p.nick.toLowerCase() === nick.toLowerCase() && id !== socket.id) cs16.players.delete(id);
     }
+    socket.emit('cs16_props',{map:cs16.map,ids:[...cs16BrokenProps],snapshot:true});
     cs16.players.set(socket.id, { nick, team: null, money: 800, hp: 100, armor: 0, alive: true, kills: 0, deaths: 0, weapon: null, kit: false, lossStreak: 0, joinedAt: Date.now() });
     cs16Personal(socket.id);
     cs16Broadcast();
@@ -5067,6 +5076,11 @@ io.on('connection', (socket) => {
   });
 
   // 3.31.0: техника — ретрансляция позиции/башни всем и взрывы пушки/ракет (AoE на сервере)
+  socket.on('cs16_props',d=>{
+    const p=cs16.players.get(socket.id);if(!p||!p.alive||!p.veh||p.veh.kind!=='tank'||!p.veh.inside||cs16.phase!=='live'||!Array.isArray(d?.ids)||!p.veh.pos)return;
+    const items=cs16Field(),ids=[];for(const id of d.ids.slice(0,12)){const item=items[id];if(!Number.isInteger(id)||!item||cs16BrokenProps.has(id)||Math.abs(p.veh.pos[1])>1||Math.hypot(item.x-p.veh.pos[0],item.z-p.veh.pos[2])>5)continue;cs16BrokenProps.add(id);ids.push(id);}
+    if(ids.length)io.emit('cs16_props',{map:cs16.map,ids});
+  });
   socket.on('cs16_crew',d=>{
     const p=cs16.players.get(socket.id);if(!p||!d)return;
     if(Number.isFinite(d.aim)){if(CS16Vehicles.active(cs16.players,p)&&p.vehSeat)socket.broadcast.emit('cs16_crew',{nick:p.nick,owner:p.vehSeat,aim:d.aim});return;}

@@ -3,7 +3,7 @@ const install=require('./calls-service');
 function fixture(){
  const owner={username:'fifflaren',team:'Alpha',callsSessions:[]},routes={},sockets=[];
  let connection,query,skip;
- const service=install({app:{get:(path,fn)=>routes[path]=fn},io:{on:(event,fn)=>connection=fn},User:{
+ const service=install({app:{get:(path,fn)=>routes[path]=fn,patch:(path,fn)=>routes[path]=fn},io:{on:(event,fn)=>connection=fn},User:{
   findOne(){const result=Promise.resolve(owner);result.select=()=>result;return result;},
   async updateOne(filter,update){owner.callsSessions.push(...update.$push.callsSessions.$each);},
   async find(){return [{username:'member'}];}
@@ -20,7 +20,7 @@ test('UTC+3 report boundary, midnight and invalid dates',()=>{
  assert.throws(()=>install.dayBounds('2026-02-30'));
 });
 test('private report rejects unknown, expired and banned sessions',async()=>{
- const f=fixture();assert.equal(await f.service.issue({username:'member'}),undefined);
+ const f=fixture();assert.equal(await f.service.issue({username:'member',isBanned:true}),undefined);
  assert.equal((await f.request('x'.repeat(43))).status,403);
  const token=await f.service.issue(f.owner);assert.equal(await f.service.valid(token),true);
  assert.notEqual(f.owner.callsSessions[0].hash,token);
