@@ -4657,7 +4657,8 @@ function cs16VehBoom(attacker, pos, weapon) {
     if (cs16.gm !== 'gg' && target.team === attacker.team) continue;
     const tx = target.bot ? target.bx : target.lx, tz = target.bot ? target.bz : target.lz;
     if (tx == null) continue;
-    const d = Math.hypot(tx - pos[0], tz - pos[2]);
+    const ty = target.bot ? 1 : (Number.isFinite(target.ly) ? target.ly + 1 : 1);
+    const d = Math.hypot(tx - pos[0], ty - pos[1], tz - pos[2]);
     if (d > 6) continue;
     let dmg = Math.round(90 * (1 - d / 6));
     if (target.armor > 0) dmg = Math.round(dmg * 0.5);
