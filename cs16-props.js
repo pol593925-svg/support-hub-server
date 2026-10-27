@@ -1,5 +1,6 @@
 (function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;if(root)root.CS16Props=api;})(typeof window!=='undefined'?window:null,function(){
  'use strict';
+ function safeSpawn(grid,pos){const h=grid.length,w=grid[0].length;let x=pos?.[0],z=pos?.[2];if(!Number.isFinite(x)||!Number.isFinite(z)||x<4||z<4||x>=(w-1)*4||z>=(h-1)*4){x=w*2;z=h*2;}let best=null,score=Infinity;for(let cy=1;cy<h-1;cy++)for(let cx=1;cx<w-1;cx++){if(grid[cy][cx]!==0)continue;const d=(cx*4+2-x)**2+(cy*4+2-z)**2;if(d<score){score=d;best=[cx*4+2,0,cy*4+2];}}if(!best)throw Error('No safe spawn cell');return best;}
  function generate(grid,map){const out=[],seed=map==='inferno'?917:331;
   const hash=(x,z)=>{let n=Math.imul(x+seed,374761393)^Math.imul(z+11,668265263);n=Math.imul(n^(n>>>13),1274126177);return(n^(n>>>16))>>>0;};
   for(let z=2;z<grid.length-2;z++)for(let x=2;x<grid[0].length-2;x++){
@@ -46,5 +47,5 @@
   function dispose(){group.traverse(o=>{o.geometry?.dispose();o.material?.dispose();});leafTexture.dispose();grassTexture.dispose();woodTexture.dispose();metalTexture.dispose();group.removeFromParent();debris.length=0;}
   return {items,destroy,near,update,reset,dispose,broken};
  }
- return {generate,create};
+ return {generate,create,safeSpawn};
 });

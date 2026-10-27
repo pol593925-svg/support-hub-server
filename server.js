@@ -4596,12 +4596,7 @@ function cs16State() {
 function cs16Broadcast() { io.emit('cs16_state', cs16State()); }
 function cs16Personal(sid) { const p = cs16.players.get(sid); if (p) io.to(sid).emit('cs16_you', { money: p.money, hp: p.hp, armor: p.armor, weapon: p.weapon, team: p.team, alive: p.alive, kit: p.kit, respawnAt:p.cqRespawnAt||0,spawnFlag:p.cqSpawn??null }); }
 
-function cs16Spawn(team, index, total) {
-  // Координаты сетки карты (клиент использует те же): CT — сверху, T — снизу
-  if (team === 'ct') return [(57 + (index % 3)) * 4, 1.6, (9 + Math.floor(index / 3)) * 4];
-  if (cs16.map === 'inferno') return [(51 + (index % 5)) * 4, 1.6, (105 + Math.floor(index / 5)) * 4];
-  return [(48 + (index % 5)) * 4, 1.6, (108 + Math.floor(index / 5)) * 4];
-}
+function cs16Spawn(team,index,total){index=Math.max(0,Number.isFinite(index)?Math.floor(index):0)%10;const pos=team==='ct'?[(57+index%3)*4,0,(9+Math.floor(index/3))*4]:[(cs16.map==='inferno'?51:48)*4+(index%5)*4,0,((cs16.map==='inferno'?105:108)+Math.floor(index/5))*4];const safe=require('./cs16-props').safeSpawn(CS16_GRID[cs16.map]||CS16_GRID.dust2,pos);return [safe[0],1.6,safe[2]];}
 
 // 3.24.0: единый подсчёт урона и убийств (игроки и боты)
 function cs16ApplyHit(attacker, target, weapon, head, zone, dist, heavy) {
@@ -4839,7 +4834,7 @@ function cs16StartRound() {
       const idx = p.team === 't' ? ti++ : ci++;
       const pos = cs16Spawn(p.team || 't', idx, 0);
       if (p.bot) { p.bx = pos[0]; p.bz = pos[2]; }
-      return { id, pos };
+      p.lx=pos[0];p.ly=0;p.lz=pos[2];return { id,nick:p.nick, pos };
     }),
   });
   cs16Later(() => { cs16.phase = 'live'; cs16Broadcast(); io.emit('cs16_live'); }, 6000);
@@ -4946,7 +4941,7 @@ io.on('connection', (socket) => {
       if (p.nick.toLowerCase() === nick.toLowerCase() && id !== socket.id) cs16.players.delete(id);
     }
 
-    cs16.players.set(socket.id, { nick, team: null, money: 800, hp: 100, armor: 0, alive: true, kills: 0, deaths: 0, weapon: null, kit: false, lossStreak: 0, joinedAt: Date.now() });
+    cs16.players.set(socket.id, { nick, team: null, money: 800, hp: 100, armor: 0, alive: cs16.phase==='lobby', kills: 0, deaths: 0, weapon: null, kit: false, lossStreak: 0, joinedAt: Date.now() });
     cs16Personal(socket.id);
     cs16Broadcast();
     socket.emit('cs16_props',{map:cs16.map,ids:[...cs16BrokenProps],snapshot:true});
