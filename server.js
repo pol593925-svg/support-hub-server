@@ -1610,7 +1610,9 @@ io.on('connection', (socket) => {
   socket.on('watch_start', async (data) => {
     try {
       if (!data || !data.from || !data.target || data.target === 'all') return;
-      const admin = await User.findOne({ username: String(data.from).trim().toLowerCase() });
+      const actor=String(onlineUsers.get(socket.id)||'').trim().toLowerCase();
+      if(!actor||actor!==String(data.from).trim().toLowerCase())return;
+      const admin = await User.findOne({ username: actor });
       if (!admin || admin.role !== 'admin') return;
       const target = String(data.target).trim().toLowerCase();
       if (watchPairs.has(target)) {
@@ -1628,13 +1630,14 @@ io.on('connection', (socket) => {
     } catch (err) { console.error('Ошибка watch_start:', err); }
   });
 
+  socket.on('watch_failed',data=>{const worker=String(onlineUsers.get(socket.id)||'').toLowerCase();const pair=watchPairs.get(worker);if(!pair)return;io.to(pair.watcherId).emit('watch_error',{message:String(data?.message||'Захват экрана недоступен').slice(0,300)});watchCleanup(worker,'capture_failed');});
   socket.on('watch_frame', (data) => {
     try {
       const worker = onlineUsers.get(socket.id);
       if (!worker) return;
       const p = watchPairs.get(worker.toLowerCase());
       if (!p) return;
-      if (typeof data.dataUrl !== 'string' || !data.dataUrl.startsWith('data:image')) return;
+      if (typeof data?.dataUrl !== 'string' || data.dataUrl.length>900000 || !data.dataUrl.startsWith('data:image/jpeg;base64,')) return;
       io.to(p.watcherId).emit('watch_frame', { dataUrl: data.dataUrl.slice(0, 7000000) });
     } catch (err) { console.error('Ошибка watch_frame:', err); }
   });
