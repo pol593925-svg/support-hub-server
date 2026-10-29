@@ -1,0 +1,27 @@
+const path=require('path'),deps=process.env.VOXEL_TEST_DEPS,dependency=name=>require(deps?path.join(deps,name):name);
+const {MongoMemoryReplSet}=dependency('mongodb-memory-server'),mongoose=dependency('mongoose'),{Server}=dependency('socket.io'),{io:client}=dependency('socket.io-client'),http=require('http'),assert=require('assert/strict');
+const install=require('../voxel-service'),C=require('../voxel-core'),pause=ms=>new Promise(r=>setTimeout(r,ms));
+(async()=>{let db,web,io,models,sockets=[];try{
+ db=await MongoMemoryReplSet.create({replSet:{count:1},instanceOpts:[{launchTimeout:60000}],binary:{version:'8.2.6'}});await mongoose.connect(db.getUri(),{dbName:'survival_test'});
+ async function start(){web=http.createServer();io=new Server(web);models=install({io,mongoose,authenticate:async token=>({username:token})});await Promise.all(Object.values(models).map(m=>m.init()));await new Promise(r=>web.listen(0,'127.0.0.1',r));}
+ const connect=token=>new Promise((resolve,reject)=>{const s=client('http://127.0.0.1:'+web.address().port+'/voxel',{auth:{token},reconnection:false});sockets.push(s);s.once('connect',()=>resolve(s));s.once('connect_error',reject);});
+ const rpc=(s,n,d={})=>new Promise((resolve,reject)=>s.timeout(5000).emit(n,d,(e,r)=>e?reject(e):resolve(r)));
+ await start();const h=C.height(0,0,758321),at=[2,h+2,2],furnaceAt=[1,h+2,1];
+ await models.Player.create({_id:'alpha',pos:[.5,h+2,.5],health:10,hunger:10,inventory:{6:16,4:1,3:1,15:1,104:1,106:1,118:1},wear:{104:1}});
+ let a=await connect('alpha');assert((await rpc(a,'join')).ok);const ate=await rpc(a,'eat',{item:118});assert(ate.ok,ate.error);assert.equal(ate.vitals.hunger,14);assert.equal(ate.inventory[118],0);assert(!(await rpc(a,'eat',{item:118})).ok);
+ assert((await rpc(a,'edit',{action:'place',at,block:3})).ok);const mine=await rpc(a,'mine',{at,tool:104});assert(mine.ok);await pause(mine.duration+100);const broken=await rpc(a,'edit',{action:'break',at});assert(broken.ok,broken.error);assert(broken.broke);assert.equal(broken.inventory[104],0);assert.equal((await models.Player.findById('alpha').lean()).inventory[104],0);
+ await pause(160);assert((await rpc(a,'edit',{action:'place',at:furnaceAt,block:15})).ok);
+ const oldUpdate=models.Player.updateOne;models.Player.updateOne=()=>Promise.reject(Error('write failure'));const rejected=await rpc(a,'smelt',{at:furnaceAt,id:'charcoal'});models.Player.updateOne=oldUpdate;assert(!rejected.ok);assert.equal(await models.Furnace.countDocuments(),0,'failed inventory save rolls back furnace job');
+ const smelt=await rpc(a,'smelt',{at:furnaceAt,id:'charcoal'});assert(smelt.ok,smelt.error);assert.equal(smelt.inventory[4],0);assert.equal(smelt.inventory[6],14);assert(smelt.jobs[0].readyAt-smelt.now>9000);assert(!(await rpc(a,'collect_furnace',{at:furnaceAt})).ok);
+ const startBreak=await rpc(a,'mine',{at:furnaceAt,tool:106});assert(startBreak.ok);await pause(startBreak.duration+100);const busyBreak=await rpc(a,'edit',{action:'break',at:furnaceAt});assert(!busyBreak.ok&&busyBreak.error.includes('содержимое'));assert.equal((await rpc(a,'join')).wear[106],undefined,'failed break must not wear the tool');await rpc(a,'mine_cancel');
+ await rpc(a,'leave');a.disconnect();await new Promise(r=>io.close(r));await mongoose.disconnect();await mongoose.connect(db.getUri(),{dbName:'survival_test'});mongoose.deleteModel(/HubVoxel/);await start();
+ a=await connect('alpha');const again=await rpc(a,'join');assert.equal(again.inventory[104],undefined);assert.equal(again.vitals.hunger,14);const queued=await rpc(a,'furnace',{at:furnaceAt});assert.equal(queued.jobs.length,1);assert.equal(queued.jobs[0].readyAt,smelt.jobs[0].readyAt);
+ const b=await connect('beta');await rpc(b,'join');await pause(Math.max(0,queued.jobs[0].readyAt-Date.now())+80);const collect=await rpc(b,'collect_furnace',{at:furnaceAt});assert(collect.ok,collect.error);assert.equal(collect.inventory[102],1);assert(!(await rpc(a,'collect_furnace',{at:furnaceAt})).ok,'output cannot be collected twice');
+ // Damage is computed by the server from accepted positions, never a client damage number.
+ await pause(100);a.emit('move',{pos:[.5,h+30,.5],yaw:0});await pause(120);a.emit('move',{pos:[.5,h+1,.5],yaw:0});await pause(1300);const dead=await rpc(a,'join');assert.equal(dead.vitals.health,0);assert(!(await rpc(a,'craft',{id:'sticks'})).ok);const respawn=await rpc(a,'respawn');assert(respawn.ok,respawn.error);assert.equal(respawn.vitals.health,20);assert.equal(respawn.vitals.hunger,20);assert(respawn.pos[1]>=h+1);
+ await rpc(a,'leave');await rpc(b,'leave');a.disconnect();b.disconnect();
+ // Seed underwater cells in this isolated test database to verify the authoritative air timer.
+ await models.Chunk.updateOne({world:'support-main-v1',cx:0,cz:0},{$set:{['blocks.'+C.key(0,h+1,0)]:12,['blocks.'+C.key(0,h+2,0)]:12}},{upsert:true});await models.Player.updateOne({_id:'alpha'},{$set:{pos:[.5,h+1,.5],health:10,hunger:10,air:1}});
+ a=await connect('alpha');await rpc(a,'join');await pause(1300);const underwater=await rpc(a,'join');assert.equal(underwater.vitals.air,0);assert(underwater.vitals.health<=8);await rpc(a,'leave');
+ console.log('PASS: survival, food, tool breakage, transaction rollback, persistent furnace after restart, shared collection, death/respawn and drowning');
+}finally{for(const s of sockets)s.disconnect();if(io)await new Promise(r=>io.close(r));await mongoose.disconnect();if(db)await db.stop();}})().catch(e=>{console.error(e);process.exitCode=1;});

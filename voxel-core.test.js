@@ -20,3 +20,6 @@ test('new-world biomes cover seven climates and match server cells at chunk seam
  assert.equal(examples.size,7);for(const[cx,cz]of examples.values()){const data=C.generate(cx,cz,seed);for(let z=0;z<16;z++)for(let x=0;x<16;x++)for(let y=0;y<48;y++)assert.equal(data[y*256+z*16+x],C.terrain(cx*16+x,y,cz*16+z,seed),`${cx}/${cz} ${x},${y},${z}`);}
  assert.equal(C.biome(0,0,758321),'plains');
 });
+
+test('tool durability consumes only the current tool and preserves spare tools',()=>{const bag={104:2},wear={104:1};const r=C.wearTool(bag,wear,104);assert.equal(r.inventory[104],1);assert.equal(r.wear[104],undefined);assert(r.broke);assert.equal(bag[104],2);assert.equal(wear[104],1);const next=C.wearTool(r.inventory,r.wear,104);assert.equal(next.wear[104],58);assert(!next.broke);assert.deepEqual(C.wearTool({}, {},104).inventory,{});});
+test('food cannot heal dead players or be consumed without stock; hunger is capped',()=>{assert.equal(C.consume({118:1},{health:8,hunger:19},118).vitals.hunger,20);assert.throws(()=>C.consume({118:1},{health:0,hunger:0},118));assert.throws(()=>C.consume({118:1},{health:20,hunger:20},118));assert.throws(()=>C.consume({},{health:20,hunger:5},118));assert.throws(()=>C.consume({6:5},{health:20,hunger:5},6));});

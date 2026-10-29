@@ -27,6 +27,13 @@
  for(const r of recipes)if(patterns[r.id])r.pattern=patterns[r.id];
  for(const[kind,start]of [['axe',110],['shovel',114]])for(let i=0;i<4;i++){const material=[6,3,103,109][i],id=start+i;recipes.push({id:kind+'-'+i,name:items[id].name,in:{[material]:kind==='axe'?3:1,101:2},out:{[id]:1},station:14,pattern:kind==='axe'?[[material,material],[material,101],[0,101]]:[[material],[101],[101]]});}
  recipes.push({id:'pine-planks',name:'Доски из хвойного бревна ×4',in:{22:1},out:{6:4},pattern:[[22]]},{id:'clay-bricks',name:'Кирпичи из глины ×4',in:{20:4,102:1},out:{7:4},station:15});
+ Object.assign(items,{118:{name:'Яблоко',food:4},119:{name:'Плод кактуса',food:3},120:{name:'Печёное яблоко',food:6}});
+ for(const item of Object.values(items))if(item.kind)item.durability=[0,59,131,250,1561][item.tier];
+ recipes.push({id:'baked-apples',name:'Печёные яблоки ×4',in:{118:4,102:1},out:{120:4},station:15});
+ const charcoal=recipes.find(r=>r.id==='charcoal');charcoal.in={4:1,6:2};charcoal.out={102:1};charcoal.name='Древесный уголь';
+ for(const recipe of recipes)if(recipe.station===15)recipe.smeltMs=10000*Math.max(...Object.values(recipe.out));
+ function wearTool(inventory,wear,tool){const bag={...inventory},next={...wear},max=items[tool]?.durability;let broke=false;if(max&&bag[tool]>0){next[tool]=(Number.isFinite(next[tool])?Math.min(max,Math.max(1,next[tool])):max)-1;if(next[tool]<=0){bag[tool]--;delete next[tool];broke=true;}}return {inventory:bag,wear:next,broke};}
+ function consume(inventory,vitals,id){const food=items[id]?.food;if(!food||!(inventory[id]>0))throw Error('Нет такой еды');if(vitals.hunger>=20)throw Error('Ты уже сыт');if(vitals.health<=0)throw Error('Сначала возродись');return {inventory:{...inventory,[id]:inventory[id]-1},vitals:{...vitals,hunger:Math.min(20,vitals.hunger+food)}};}
  const biomeNames={plains:'Равнины',forest:'Лес',taiga:'Тайга',snow:'Тундра',desert:'Пустыня',badlands:'Красные скалы',swamp:'Болото'};
  // Positive seeds preserve generation v1 exactly. New worlds use negative seeds (v2).
  function biome(x,z,seed){if(seed>=0)return 'plains';const heat=noise(x/150,z/150,seed+991),wet=noise(x/130,z/130,seed+1927);return heat<.28?'snow':heat<.4?'taiga':heat>.68?(wet<.48?'desert':'badlands'):wet>.72?'swamp':wet>.48?'forest':'plains';}
@@ -65,5 +72,5 @@
  function intersects(pos,x,y,z){return pos[0]+.28>x&&pos[0]-.28<x+1&&pos[1]+1.75>y&&pos[1]<y+1&&pos[2]+.28>z&&pos[2]-.28<z+1;}
  function craft(inventory,id){const r=recipes.find(r=>r.id===id);if(!r)throw Error('Неизвестный рецепт');const out={...inventory};for(const [item,n]of Object.entries(r.in)){if((out[item]||0)<n)throw Error('Не хватает ресурсов');out[item]-=n;}for(const [item,n]of Object.entries(r.out)){out[item]=(out[item]||0)+n;if(out[item]>9999)throw Error('Инвентарь заполнен');}return out;}
  function ray(origin,dir,get,range=6){let previous=origin.map(Math.floor);for(let t=0;t<=range;t+=.04){const at=origin.map((v,i)=>Math.floor(v+dir[i]*t));if(solid(get(...at)))return {at,previous};previous=at;}return null;}
- return {SIZE,HEIGHT,LIMIT,WATER,blocks,items,recipes,hash,height,terrain,generate,chunk,key,solid,validPos,validCell,intersects,craft,ray,matchRecipe,mining,biome,biomeNames};
+ return {SIZE,HEIGHT,LIMIT,WATER,blocks,items,recipes,hash,height,terrain,generate,chunk,key,solid,validPos,validCell,intersects,craft,ray,matchRecipe,mining,biome,biomeNames,wearTool,consume};
 });
