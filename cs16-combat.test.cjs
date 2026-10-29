@@ -20,7 +20,7 @@ test('actual hit handler rejects invalid targets/ranges and throttles duplicate 
 });
 test('actual damage application consumes armor and reports it to the client',()=>{
   const code=source.slice(source.indexOf('function cs16ApplyHit('),source.indexOf('// 3.24.0: Gun-Game'));
-  const events=[];const context={CS16Combat,io:{emit:(name,data)=>events.push({name,data})}};
+  const events=[];const context={cs16:{gm:'classic'},CS16Combat,io:{emit:(name,data)=>events.push({name,data})}};
   vm.runInNewContext(code,context);
   const target={nick:'B',hp:100,armor:100};
   context.cs16ApplyHit({nick:'A'},target,'ak47',false,'body',0,false);

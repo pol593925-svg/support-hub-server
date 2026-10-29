@@ -1,10 +1,11 @@
 (function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;if(root)root.CS16Props=api;})(typeof window!=='undefined'?window:null,function(){
  'use strict';
- function safeSpawn(grid,pos){const h=grid.length,w=grid[0].length;let x=pos?.[0],z=pos?.[2];if(!Number.isFinite(x)||!Number.isFinite(z)||x<4||z<4||x>=(w-1)*4||z>=(h-1)*4){x=w*2;z=h*2;}let best=null,score=Infinity;for(let cy=1;cy<h-1;cy++)for(let cx=1;cx<w-1;cx++){if(grid[cy][cx]!==0)continue;const d=(cx*4+2-x)**2+(cy*4+2-z)**2;if(d<score){score=d;best=[cx*4+2,0,cy*4+2];}}if(!best)throw Error('No safe spawn cell');return best;}
+ const Buildings=typeof window!=='undefined'?window.CS16Buildings:require('./cs16-buildings');
+ function safeSpawn(grid,pos){const h=grid.length,w=grid[0].length;let x=pos?.[0],z=pos?.[2];if(!Number.isFinite(x)||!Number.isFinite(z)||x<4||z<4||x>=(w-1)*4||z>=(h-1)*4){x=w*2;z=h*2;}let best=null,score=Infinity;for(let cy=1;cy<h-1;cy++)for(let cx=1;cx<w-1;cx++){if(grid[cy][cx]!==0||Buildings.contains(grid,'dust2',cx*4+2,cy*4+2,1))continue;const d=(cx*4+2-x)**2+(cy*4+2-z)**2;if(d<score){score=d;best=[cx*4+2,0,cy*4+2];}}if(!best)throw Error('No safe spawn cell');return best;}
  function generate(grid,map){const out=[],seed=map==='inferno'?917:331;
   const hash=(x,z)=>{let n=Math.imul(x+seed,374761393)^Math.imul(z+11,668265263);n=Math.imul(n^(n>>>13),1274126177);return(n^(n>>>16))>>>0;};
   for(let z=2;z<grid.length-2;z++)for(let x=2;x<grid[0].length-2;x++){
-   if(grid[z][x]!==0)continue;const h=hash(x,z);if(h%100>56)continue;
+   if(grid[z][x]!==0||Buildings.contains(grid,map,x*4+2,z*4+2,2))continue;const h=hash(x,z);if(h%100>56)continue;
    let open=0,underground=false;for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++){const v=grid[z+dz][x+dx];if(v===0)open++;if(v>=4&&v<=11)underground=true;}if(underground)continue;
    const zone=z<grid.length*.28?'base':x<grid[0].length*.38?'forest':x>grid[0].length*.66?'industry':'village';let kind=open>=7&&h%9===0?'tree':h%7===0?'fence':h%11===0?'barrel':h%5===0?'sandbags':h%3===0?'grass':'shrub';
    if(zone==='forest')kind=open>=7&&h%4===0?'tree':h%3===0?'grass':'shrub';if(zone==='base'&&h%3===0)kind='sandbags';if(zone==='industry'&&h%3===0)kind='pipes';if(zone==='village'&&h%8===0)kind='crate';
