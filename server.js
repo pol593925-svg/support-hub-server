@@ -4211,6 +4211,7 @@ app.post('/api/casino/rr/pull', async (req, res) => {
 // Одна комната на всех: лобби → распределение по командам → старт первым зашедшим → раунды.
 const CS16Combat = require('./cs16-combat');
 const CS16Vehicles = require('./cs16-vehicles');
+const CS16Classes=require('./cs16-classes');
 const CS16Buildings=require('./cs16-buildings');
 const CS16RPG=require('./cs16-rpg');
 const CS16Props=require('./cs16-props');
@@ -4594,7 +4595,7 @@ function cs16State() {
     freezeEnds: cs16.freezeEnds, roundEnds: cs16.roundEnds, buyUntil: cs16.buyUntil,
     now: Date.now(),
     players: [...cs16.players.entries()].map(([id, p]) => ({
-      id, nick: p.nick, team: p.team, alive: p.alive, hp: p.hp,
+      id, nick: p.nick, classId:p.classId||'assault',nextClass:p.nextClass||p.classId||'assault',team: p.team, alive: p.alive, hp: p.hp,
       kills: p.kills, deaths: p.deaths, money: p.money, weapon: p.weapon,
       bot: !!p.bot, lvl: cs16LvlOf(p.nick), respawnAt:p.cqRespawnAt||0, spawnFlag:p.cqSpawn??null,
     })),
@@ -4844,7 +4845,7 @@ function cs16StartRound() {
       const idx = p.team === 't' ? ti++ : ci++;
       const pos = cs16Spawn(p.team || 't', idx, 0);
       if (p.bot) { p.bx = pos[0]; p.bz = pos[2]; }
-      p.lx=pos[0];p.ly=0;p.lz=pos[2];return { id,nick:p.nick, pos };
+      p.lx=pos[0];p.ly=0;p.lz=pos[2];return { id,nick:p.nick, pos,weapon:p.weapon,armor:p.armor,classId:p.classId };
     }),
   });
   cs16Later(() => { cs16.phase = 'live'; cs16Broadcast(); io.emit('cs16_live'); }, 6000);
@@ -4957,6 +4958,7 @@ io.on('connection', (socket) => {
     socket.emit('cs16_props',{map:cs16.map,ids:[...cs16BrokenProps],snapshot:true});
   });
 
+  socket.on('cs16_class',id=>{const p=cs16.players.get(socket.id);if(!p||!CS16Classes.valid(id))return;p.nextClass=id;socket.emit('cs16_class_selected',{id});cs16Broadcast();});
   socket.on('cs16_team', (team) => {
     const p = cs16.players.get(socket.id);
     if (!p) return;

@@ -1,12 +1,13 @@
 'use strict';
+const Classes=require('./cs16-classes'),Props=require('./cs16-props'),Buildings=require('./cs16-buildings');
 function makeFlags(grid){const h=grid.length,w=grid[0].length,used=[];return [[.28,.24],[.72,.24],[.5,.5],[.28,.76],[.72,.76]].map(([fx,fz],i)=>{
- let best=null,score=Infinity;for(let z=2;z<h-2;z++)for(let x=2;x<w-2;x++){if(grid[z][x]!==0||used.some(p=>Math.hypot(p.x-x*4-2,p.z-z*4-2)<35))continue;let open=0;for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++)if(grid[z+dz][x+dx]===0)open++;const d=(x-w*fx)**2+(z-h*fz)**2+(9-open)*5;if(d<score){score=d;best={id:i,label:'ABCDE'[i],x:x*4+2,z:z*4+2,owner:null,capturing:null,progress:0,contested:false};}}
+ let best=null,score=Infinity;for(let z=2;z<h-2;z++)for(let x=2;x<w-2;x++){if(grid[z][x]!==0||Buildings.contains(grid,'',x*4+2,z*4+2,2)||used.some(p=>Math.hypot(p.x-x*4-2,p.z-z*4-2)<35))continue;let open=0;for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++)if(grid[z+dz][x+dx]===0)open++;const d=(x-w*fx)**2+(z-h*fz)**2+(9-open)*5;if(d<score){score=d;best={id:i,label:'ABCDE'[i],x:x*4+2,z:z*4+2,owner:null,capturing:null,progress:0,contested:false};}}
  if(!best)throw Error('Cannot place conquest flag');used.push(best);return best;});}
 function create({state,grid,emit,personal,spawn,finish,blast,reward=()=>{}}){
  let lastTick=0,nextIncome=0,shots=[],serial=0;
  const sid=p=>[...state.players].find(([,v])=>v===p)?.[0];
  function start(now){state.scores={t:0,ct:0};state.winner=null;state.cq={flags:makeFlags(grid()),limit:50};state.roundEnds=state.freezeEnds+600000;state.buyUntil=state.roundEnds;lastTick=state.freezeEnds;nextIncome=state.freezeEnds+10000;shots=[];
-  for(const p of state.players.values()){p.cqSpawn=null;p.cqStats={captures:0,defenses:0,vehicles:0,vehicleKills:0,teamwork:0};p.cqRespawnAt=0;p.cqProtectedUntil=state.freezeEnds+1800;p.artilleryUntil=0;p.kills=0;p.deaths=0;p.money=5000;p.armor=100;p.weapon=p.team==='t'?'ak47':'m4a1';}
+  for(const p of state.players.values()){p.cqSpawn=null;p.cqStats={captures:0,defenses:0,vehicles:0,vehicleKills:0,teamwork:0};p.cqRespawnAt=0;p.cqProtectedUntil=state.freezeEnds+1800;p.artilleryUntil=0;p.kills=0;p.deaths=0;p.money=5000;p.armor=100;Classes.apply(p);}
  }
  function winner(){return state.scores.t===state.scores.ct?'draw':state.scores.t>state.scores.ct?'t':'ct';}
  function killed(attacker,target,now=Date.now(),weapon){
@@ -23,10 +24,10 @@ function create({state,grid,emit,personal,spawn,finish,blast,reward=()=>{}}){
  }
  function chooseSpawn(p,id){if(state.gm!=='cq'||state.phase!=='live'||!p?.team||p.alive)return 'Точка выбирается после гибели.';if(id!==null&&!safeFlag(p,id))return 'Флаг недоступен: потерян или рядом противник.';p.cqSpawn=id;personal(sid(p));return null;}
  function spawnPosition(p,index){const f=safeFlag(p,p.cqSpawn);if(f){const g=grid(),cx=Math.floor(f.x/4),cz=Math.floor(f.z/4);const candidates=[];for(let dz=-2;dz<=2;dz++)for(let dx=-2;dx<=2;dx++)if(g[cz+dz]?.[cx+dx]===0&&![...state.players.values()].some(e=>e.alive&&e.team&&e.team!==p.team&&Math.abs(e.ly||0)<3&&Math.hypot((e.bot?e.bx:e.lx)-((cx+dx)*4+2),(e.bot?e.bz:e.lz)-((cz+dz)*4+2))<16))candidates.push([(cx+dx)*4+2,0,(cz+dz)*4+2]);if(candidates.length)return candidates[index%candidates.length];}const pos=spawn(p.team,index,0);return [pos[0],0,pos[2]];}
- function respawn(p,now){const index=[...state.players.values()].filter(v=>v.team===p.team).indexOf(p),pos=spawnPosition(p,Math.max(0,index));
-  p.alive=true;p.hp=100;p.armor=100;p.weapon=p.team==='t'?'ak47':'m4a1';p.kit=false;p.cqRespawnAt=0;p.cqProtectedUntil=now+1800;p.vehSeat=null;
+ function respawn(p,now){const index=[...state.players.values()].filter(v=>v.team===p.team).indexOf(p),pos=Props.safeSpawn(grid(),spawnPosition(p,Math.max(0,index)));
+  p.alive=true;p.hp=100;p.armor=100;Classes.apply(p);p.kit=false;p.cqRespawnAt=0;p.cqProtectedUntil=now+1800;p.vehSeat=null;
   if(p.veh){emit('cs16_vehdie',{by:p.nick,kind:p.veh.kind,pos:p.veh.pos||pos});p.veh=null;}
-  p.lx=p.bx=pos[0];p.ly=0;p.lz=p.bz=pos[2];personal(sid(p));emit('cs16_cq_respawn',{nick:p.nick,pos,weapon:p.weapon,protectedUntil:p.cqProtectedUntil});
+  p.lx=p.bx=pos[0];p.ly=0;p.lz=p.bz=pos[2];personal(sid(p));emit('cs16_cq_respawn',{nick:p.nick,pos,weapon:p.weapon,armor:p.armor,classId:p.classId,protectedUntil:p.cqProtectedUntil});
  }
  function tick(now=Date.now()){
   if(state.gm!=='cq'||state.phase!=='live'||!state.cq)return;

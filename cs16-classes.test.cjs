@@ -1,0 +1,7 @@
+const test=require('node:test'),assert=require('node:assert/strict'),Classes=require('./cs16-classes'),CQ=require('./cs16-conquest'),Buildings=require('./cs16-buildings');
+test('four loadouts, finite ammo, invalid IDs, next-life application and safe flags',()=>{
+ for(const team of ['t','ct'])for(const [id,spec]of Object.entries(Classes.profiles)){const p={team,nextClass:id};Classes.apply(p);assert.equal(p.armor,spec.armor);assert.equal(p.weapon,spec.weapon==='rifle'?(team==='t'?'ak47':'m4a1'):spec.weapon);assert.equal(p.rpgAmmo,id==='antitank'?4:0);}
+ for(const id of ['__proto__','constructor','unknown',null,{}])assert(!Classes.valid(id));
+ const grid=Array.from({length:126},()=>Array(126).fill(0)),p={nick:'A',team:'ct',alive:true},events=[],state={gm:'cq',phase:'live',freezeEnds:0,players:new Map([['a',p]])};const cq=CQ.create({state,grid:()=>grid,emit:(n,d)=>events.push({n,d}),personal(){},spawn:()=>[38,0,106],finish(){},blast(){}});cq.start(0);p.nextClass='antitank';assert.equal(p.weapon,'m4a1');p.alive=false;cq.killed(null,p,1000);cq.tick(5000);assert.equal(p.weapon,'rpg');assert.equal(p.rpgAmmo,4);assert.equal(p.armor,75);assert(!Buildings.contains(grid,'',p.lx,p.lz,1));for(const f of state.cq.flags)assert(!Buildings.contains(grid,'',f.x,f.z,2));assert(events.some(e=>e.n==='cs16_cq_respawn'&&e.d.weapon==='rpg'&&e.d.armor===75));
+ p.nextClass='recon';assert.equal(p.weapon,'rpg');p.alive=false;cq.killed(null,p,6000);cq.tick(10000);assert.equal(p.weapon,'awp');assert.equal(p.rpgAmmo,0);
+});

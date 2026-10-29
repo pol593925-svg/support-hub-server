@@ -1,10 +1,11 @@
 'use strict';
 // Reverse breadth-first fields are shared by every squad, not rebuilt per bot tick.
+const Buildings=require('./cs16-buildings');
 const cache=new WeakMap();
 function field(grid,flag){let maps=cache.get(grid);if(!maps){maps=new Map();cache.set(grid,maps);}const key=flag.x+','+flag.z;if(maps.has(key))return maps.get(key);
  const h=grid.length,w=grid[0].length,dist=new Int32Array(w*h).fill(-1),queue=new Int32Array(w*h);let tail=0,head=0;
  const start=Math.floor(flag.z/4)*w+Math.floor(flag.x/4);dist[start]=0;queue[tail++]=start;
- while(head<tail){const at=queue[head++],x=at%w,z=Math.floor(at/w);for(const [dx,dz]of [[1,0],[-1,0],[0,1],[0,-1]]){const nx=x+dx,nz=z+dz,ni=nz*w+nx;if(nx<0||nz<0||nx>=w||nz>=h||grid[nz][nx]!==0||dist[ni]>=0)continue;dist[ni]=dist[at]+1;queue[tail++]=ni;}}
+ while(head<tail){const at=queue[head++],x=at%w,z=Math.floor(at/w);for(const [dx,dz]of [[1,0],[-1,0],[0,1],[0,-1]]){const nx=x+dx,nz=z+dz,ni=nz*w+nx;if(nx<0||nz<0||nx>=w||nz>=h||grid[nz][nx]!==0||dist[ni]>=0||Buildings.contains(grid,'',nx*4+2,nz*4+2,1))continue;dist[ni]=dist[at]+1;queue[tail++]=ni;}}
  maps.set(key,dist);return dist;
 }
 function destination(p,state,grid){const flags=state.cq?.flags||[],w=grid[0].length,x=Math.floor(p.bx/4),z=Math.floor(p.bz/4),at=z*w+x;
