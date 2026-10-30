@@ -3,7 +3,7 @@ const install=require('./calls-service');
 function fixture(){
  const owner={username:'fifflaren',team:'Alpha',callsSessions:[]},routes={},sockets=[];
  let connection,query,skip;
- const service=install({app:{get:(path,fn)=>routes[path]=fn,patch:(path,fn)=>routes[path]=fn},io:{on:(event,fn)=>connection=fn},User:{
+ const service=install({app:{post(){},get:(path,fn)=>routes[path]=fn,patch:(path,fn)=>routes[path]=fn},io:{on:(event,fn)=>connection=fn},User:{
   findOne(){const result=Promise.resolve(owner);result.select=()=>result;return result;},
   async updateOne(filter,update){owner.callsSessions.push(...update.$push.callsSessions.$each);},
   async find(){return [{username:'member'}];}
