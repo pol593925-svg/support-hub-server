@@ -4586,6 +4586,7 @@ function cs16Alive(team) { let n = 0; for (const p of cs16.players.values()) if 
 function cs16ClearTimers() { for (const t of cs16.timers) clearTimeout(t); cs16.timers = []; if (cs16.roundTimeout) { clearTimeout(cs16.roundTimeout); cs16.roundTimeout = null; } }
 function cs16Later(fn, ms) { cs16.timers.push(setTimeout(fn, ms)); }
 
+const CS16Characters=require('./cs16-characters');
 function cs16State() {
   return {
     phase: cs16.phase, mode: cs16.mode, round: cs16.round,
@@ -4595,7 +4596,7 @@ function cs16State() {
     freezeEnds: cs16.freezeEnds, roundEnds: cs16.roundEnds, buyUntil: cs16.buyUntil,
     now: Date.now(),
     players: [...cs16.players.entries()].map(([id, p]) => ({
-      id, nick: p.nick, classId:p.classId||'assault',nextClass:p.nextClass||p.classId||'assault',team: p.team, alive: p.alive, hp: p.hp,
+      id, nick: p.nick, characterId:CS16Characters.normalize(p.characterId), classId:p.classId||'assault',nextClass:p.nextClass||p.classId||'assault',team: p.team, alive: p.alive, hp: p.hp,
       kills: p.kills, deaths: p.deaths, money: p.money, weapon: p.weapon,
       bot: !!p.bot, lvl: cs16LvlOf(p.nick), respawnAt:p.cqRespawnAt||0, spawnFlag:p.cqSpawn??null,
     })),
@@ -4736,7 +4737,7 @@ function cs16BotAdd(bySocket) {
   const team = cs16TeamCount('t') <= cs16TeamCount('ct') ? 't' : 'ct';
   const wps = CS16_WPS[cs16.map] || CS16_WPS.dust2;
   cs16.players.set(id, {
-    nick: '🤖 Бот-' + cs16BotSeq, bot: true, team, money: 800, hp: 100, armor: 0,
+    nick: '🤖 Бот-' + cs16BotSeq, bot: true, characterId:['ember','tide','jade','aurora'][cs16BotSeq%4], team, money: 800, hp: 100, armor: 0,
     alive: true, kills: 0, deaths: 0, weapon: team === 't' ? 'glock' : 'usp',
     kit: false, lossStreak: 0, joinedAt: Date.now(),
     bx: wps[0][0] * 4 + 2, bz: wps[0][1] * 4 + 2, bwp: 0, blastShot: 0,
@@ -4806,7 +4807,7 @@ setInterval(() => { // тик ботов ~7 раз/сек
       if (dl < 1.5) { p.bwp = (p.bwp + 1 + Math.floor(Math.random() * 2)) % wps.length; }
       else { p.byaw = Math.atan2(dx, dz); moving = cs16BotStep(p, dx / dl, dz / dl, grid); }
     }
-    io.emit('cs16_pos', { nick: p.nick, team: p.team, pos: [+p.bx.toFixed(2), 0, +p.bz.toFixed(2)], yaw: +(p.byaw || 0).toFixed(3), pitch: 0, weapon: p.weapon || 'glock', move: moving, skin: '' });
+    io.emit('cs16_pos', { nick: p.nick, team: p.team, pos: [+p.bx.toFixed(2), 0, +p.bz.toFixed(2)], yaw: +(p.byaw || 0).toFixed(3), pitch: 0, weapon: p.weapon || 'glock', move: moving, skin: '',characterId:CS16Characters.normalize(p.characterId) });
   }
 }, 150);
 function cs16BotStep(p, ux, uz, grid) {
@@ -4938,11 +4939,6 @@ function cs16Remove(socket) {
   cs16Broadcast();
 }
 
-// 3.19.4: Support2 — лобби и матч на УРОВНЕ МОДУЛЯ. Раньше лежали внутри io.on('connection'):
-// каждый новый коннект пересоздавал s2lobby, и игроки пропадали друг у друга («На сервере: 1»).
-const s2lobby = { players: new Map() }; // sid -> {nick, team:'r'|'d', hero}
-const s2match = { active: false, hostId: null, roster: [] }; // live-матч, хост фиксируется на старте
-
 io.on('connection', (socket) => {
   socket.on('cs16_join', (nick) => {
     nick = String(nick || '').slice(0, 24);
@@ -4958,6 +4954,7 @@ io.on('connection', (socket) => {
     socket.emit('cs16_props',{map:cs16.map,ids:[...cs16BrokenProps],snapshot:true});
   });
 
+  socket.on('cs16_character',id=>{const p=cs16.players.get(socket.id);if(!p||!CS16Characters.valid(id))return;if(cs16.phase!=='lobby'&&p.team&&p.alive){socket.emit('cs16_err','Сменить внешность можно в лобби или после гибели');return;}const now=Date.now();if(p.characterChangedAt&&now-p.characterChangedAt<250)return;p.characterChangedAt=now;p.characterId=id;socket.emit('cs16_character_selected',{id});cs16Broadcast();});
   socket.on('cs16_class',id=>{const p=cs16.players.get(socket.id);if(!p||!CS16Classes.valid(id))return;p.nextClass=id;socket.emit('cs16_class_selected',{id});cs16Broadcast();});
   socket.on('cs16_team', (team) => {
     const p = cs16.players.get(socket.id);
@@ -5030,7 +5027,7 @@ io.on('connection', (socket) => {
     if (d.pos) { p.lx = d.pos[0]; p.ly=d.pos[1]; p.lz = d.pos[2]; }
     // 3.24.2: скин экипированного оружия уходит другим игрокам (только известные id)
     const skinId = (d.skin && CS16_SKINS[d.skin]) ? d.skin : '';
-    socket.broadcast.emit('cs16_pos', { nick: p.nick, team: p.team, pos: d.pos, yaw: d.yaw, pitch: d.pitch, weapon: d.weapon, move: d.move, crouched: !!d.crouched, skin: skinId });
+    socket.broadcast.emit('cs16_pos', { nick: p.nick, team: p.team, pos: d.pos, yaw: d.yaw, pitch: d.pitch, weapon: d.weapon, move: d.move, crouched: !!d.crouched, skin: skinId, characterId:CS16Characters.normalize(p.characterId) });
   });
 
   // 3.24.0: шаги — ретрансляция (звук чужих шагов по дистанции)
@@ -5291,121 +5288,8 @@ io.on('connection', (socket) => {
     cs16Broadcast();
   });
 
-  // ============ SUPPORT2: лобби и релей матча (состояние s2lobby/s2match — на уровне модуля) ============
-  function s2HostId() {
-    for (const [id, p] of s2lobby.players.entries()) if (p.nick.toLowerCase() === 'fifflaren') return id;
-    return s2lobby.players.keys().next().value || null;
-  }
-  function s2ToOthers(event, payload, exceptId) { // 3.19.0: всем в лобби, кроме указанного
-    for (const [id] of s2lobby.players) {
-      if (id === exceptId) continue;
-      const s = io.sockets.sockets.get(id);
-      if (s) s.emit(event, payload);
-    }
-  }
-  function s2Broadcast() {
-    io.emit('s2_lobby', {
-      players: [...s2lobby.players.entries()].map(([id, p]) => ({ id, nick: p.nick, team: p.team, hero: p.hero })),
-      host: s2HostId(),
-    });
-  }
-  function s2Remove(socket) {
-    if (s2lobby.players.delete(socket.id)) s2Broadcast();
-  }
-  socket.on('s2_join', (nick) => {
-    nick = String(nick || '').slice(0, 24);
-    if (!nick) return;
-    for (const [id, p] of s2lobby.players.entries()) if (p.nick === nick && id !== socket.id) s2lobby.players.delete(id);
-    const prev = s2lobby.players.get(socket.id);
-    s2lobby.players.set(socket.id, { nick, team: prev ? prev.team : null, hero: prev ? prev.hero : null });
-    s2Broadcast();
-  });
-  socket.on('s2_seat', (data) => {
-    let p = s2lobby.players.get(socket.id);
-    // 3.20.1: саморегистрация — если сессия потерялась (залипший дубль/рестарт), а клиент шлёт ник
-    if (!p && data && data.nick) {
-      const nick = String(data.nick).slice(0, 24);
-      if (nick) {
-        for (const [id2, p2] of s2lobby.players.entries()) if (p2.nick.toLowerCase() === nick.toLowerCase() && id2 !== socket.id) s2lobby.players.delete(id2);
-        p = { nick, team: null, hero: null };
-        s2lobby.players.set(socket.id, p);
-      }
-    }
-    if (!p) return;
-    const team = data && (data.team === 'r' || data.team === 'd') ? data.team : null;
-    if (p.team === team) return;
-    const cnt = [...s2lobby.players.values()].filter(x => x.team === team).length;
-    if (team && cnt >= 5) return; // максимум 5 на сторону
-    p.team = team;
-    s2Broadcast();
-  });
-  socket.on('s2_pick', (heroId) => {
-    const p = s2lobby.players.get(socket.id);
-    if (!p) return;
-    p.hero = String(heroId || '').slice(0, 24) || null;
-    s2Broadcast();
-  });
-  socket.on('s2_start', () => {
-    if (socket.id !== s2HostId()) return; // начинает только хост
-    const comp = [...s2lobby.players.values()]
-      .filter(p => p.team && p.hero)
-      .map(p => ({ nick: p.nick, team: p.team, hero: p.hero }));
-    if (!comp.length) return;
-    s2match.active = true;
-    s2match.hostId = socket.id;
-    s2match.roster = comp.map(c => c.nick);
-    io.emit('s2_start', { comp });
-  });
-  // 3.20.1: Fifflaren забирает хоста — прерывает чужой матч, все возвращаются в лобби
-  socket.on('s2_take_host', () => {
-    const p = s2lobby.players.get(socket.id);
-    if (!p || p.nick.toLowerCase() !== 'fifflaren') return;
-    if (s2match.active) {
-      s2match.active = false;
-      s2match.hostId = null;
-      io.emit('s2_abort', null); // все клиенты матча возвращаются в лобби (остальные игнорируют)
-    }
-    s2Broadcast();
-  });
-  // ---------- 3.19.0: релей синхронизации матча (хост-авторитетная модель) ----------
-  socket.on('s2_in', (data) => { // ввод игрока → хосту
-    if (!s2match.active || socket.id === s2match.hostId) return;
-    const p = s2lobby.players.get(socket.id);
-    const host = io.sockets.sockets.get(s2match.hostId);
-    if (p && host) host.emit('s2_in', { nick: p.nick, data });
-  });
-  socket.on('s2_st', (snap) => { // снапшот мира от хоста → остальным
-    if (!s2match.active || socket.id !== s2match.hostId) return;
-    s2ToOthers('s2_st', snap, socket.id);
-  });
-  socket.on('s2_ev', (ev) => { // события/фид/звуки от хоста → остальным
-    if (!s2match.active || socket.id !== s2match.hostId) return;
-    s2ToOthers('s2_ev', ev, socket.id);
-  });
-  socket.on('s2_end', (winner) => { // конец матча
-    if (socket.id !== s2match.hostId) return;
-    s2match.active = false;
-    s2ToOthers('s2_end', winner, socket.id);
-  });
-  // 3.19.0: уход игрока из активного матча Support2 — хост падает (abort), игрока меняет бот
-  function s2MatchLeave(socket) {
-    if (!s2match.active) return;
-    if (socket.id === s2match.hostId) {
-      s2match.active = false;
-      s2ToOthers('s2_abort', null, socket.id);
-    } else {
-      const p = s2lobby.players.get(socket.id);
-      if (p && s2match.roster.includes(p.nick)) {
-        const host = io.sockets.sockets.get(s2match.hostId);
-        if (host) host.emit('s2_left', { nick: p.nick });
-      }
-    }
-  }
-  socket.on('s2_leave', () => { s2MatchLeave(socket); s2Remove(socket); });
   socket.on('disconnect', () => {
     cs16Remove(socket);
-    s2MatchLeave(socket);
-    s2Remove(socket);
   });
 });
 

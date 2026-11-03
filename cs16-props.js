@@ -24,10 +24,10 @@
    const texture=new T.CanvasTexture(canvas);texture.colorSpace=T.SRGBColorSpace;return texture;
   }
   const leafTexture=foliageTexture(false),grassTexture=foliageTexture(true);
-  const resources={wood:[new T.CylinderGeometry(.12,.18,1,7),0x66543b],leaf:[cards(),dry?0xa7aa73:0x91a777],bush:[cards(),dry?0xb3ac79:0xa0b47a],grass:[cards(),dry?0xc9b486:0x9baa72],plank:[new T.BoxGeometry(1,1,1),0x85714d],bag:[new T.SphereGeometry(1,8,5),0x9d9473],barrel:[new T.CylinderGeometry(.38,.38,.9,12),0x58665c],pipe:[new T.CylinderGeometry(.24,.24,1.6,12,1,true).rotateX(Math.PI/2),0x889392],crate:[new T.BoxGeometry(1,1,1),0xa69271]};
+  const resources={wood:[new T.CylinderGeometry(.12,.18,1,12),0x66543b],leaf:[cards(),dry?0xa7aa73:0x91a777],bush:[cards(),dry?0xb3ac79:0xa0b47a],grass:[cards(),dry?0xc9b486:0x9baa72],plank:[new T.BoxGeometry(1,1,1),0x85714d],bag:[new T.SphereGeometry(1,8,5),0x9d9473],barrel:[new T.CylinderGeometry(.38,.38,.9,12),0x58665c],pipe:[new T.CylinderGeometry(.24,.24,1.6,12,1,true).rotateX(Math.PI/2),0x889392],crate:[new T.BoxGeometry(1,1,1),0xa69271]};
   function part(item,type,x,y,z,sx,sy,sz,rotation=0){if(!batches.has(type))batches.set(type,[]);dummy.position.set(item.x+x,y,item.z+z);dummy.scale.set(sx,sy,sz);dummy.rotation.set(0,rotation,0);dummy.updateMatrix();batches.get(type).push({id:item.id,matrix:dummy.matrix.clone()});}
   for(const item of items){const s=item.scale,key=Math.floor(item.x/4)+','+Math.floor(item.z/4);bins.set(key,item.id);
-   if(item.kind==='tree'){part(item,'wood',0,2*s,0,1,4*s,1);if(dry&&item.zone!=='forest'){for(let n=0;n<6;n++){const a=n*Math.PI/3;part(item,'leaf',Math.cos(a)*1.1*s,4*s,Math.sin(a)*1.1*s,1.7*s,.3*s,.6*s,-a);}}else{part(item,'leaf',0,3.6*s,0,1.2*s,2.5*s,1.2*s);part(item,'leaf',0,5*s,0,.65*s,1.7*s,.65*s);}}
+   if(item.kind==='tree'){part(item,'wood',0,2*s,0,1,4*s,1);if(dry&&item.zone!=='forest'){for(let n=0;n<6;n++){const a=n*Math.PI/3;part(item,'leaf',Math.cos(a)*1.1*s,4*s,Math.sin(a)*1.1*s,1.7*s,.3*s,.6*s,-a);}}else{for(let n=0;n<7;n++){const a=n*2.399+item.yaw,r=n===6?0:.8*s;part(item,'leaf',Math.cos(a)*r,(3.6+(n%3)*.65)*s,Math.sin(a)*r,(1.05+(n%2)*.3)*s,1.15*s,1.15*s,a);}}}
    else if(item.kind==='shrub'){for(let n=0;n<3;n++)part(item,'bush',Math.cos(n*2.1)*.4,.4*s,Math.sin(n*2.1)*.4,.7*s,.65*s,.65*s);}
    else if(item.kind==='grass'){for(let n=0;n<4;n++)part(item,'grass',Math.cos(n*2.4)*.5,.3*s,Math.sin(n*2.4)*.5,.45,.4*s,.45,item.yaw+n);}
    else if(item.kind==='fence'){for(const x of [-.8,.8])part(item,'plank',x,.55,0,.12,1.1,.12);for(const y of [.35,.8])part(item,'plank',0,y,0,1.8,.17,.09);}
@@ -36,16 +36,26 @@
    else if(item.kind==='crate'){part(item,'crate',0,.45,0,.9,.9,.9,item.yaw);for(const y of [.12,.72])part(item,'plank',0,y,.46,.92,.08,.05,item.yaw);}
    else{part(item,'barrel',0,.45,0,1,1,1);part(item,'barrel',.65,.45,.25,.85,1,.85);}
   }
-  for(const [type,parts] of batches){const [geo,color]=resources[type],plant=['leaf','bush','grass'].includes(type),mat=new T.MeshStandardMaterial({color,roughness:.92,metalness:['barrel','pipe'].includes(type)?.6:0,...(['wood','plank','crate'].includes(type)?{map:woodTexture}:['barrel','pipe'].includes(type)?{map:metalTexture}:{}),...(plant?{map:type==='grass'?grassTexture:leafTexture,alphaTest:.4,side:T.DoubleSide}: {})});const mesh=new T.InstancedMesh(geo,mat,parts.length);mesh.castShadow=type!=='grass';mesh.receiveShadow=true;mesh.instanceMatrix.setUsage(T.DynamicDrawUsage);mesh.name='Field '+type;
+
+  const breeze={value:0};
+  function windMaterial(material){material.onBeforeCompile=shader=>{shader.uniforms.fieldWindTime=breeze;shader.vertexShader='uniform float fieldWindTime;\n'+shader.vertexShader;shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>',`#include <begin_vertex>
+    #ifdef USE_INSTANCING
+    float phase=instanceMatrix[3].x*.71+instanceMatrix[3].z*.53;
+    float tip=pow(clamp((position.y+1.)*.5,0.,1.),2.);
+    transformed.x+=sin(fieldWindTime*1.4+phase)*.075*tip;
+    transformed.z+=cos(fieldWindTime*.9+phase)*.045*tip;
+    #endif`);};material.customProgramCacheKey=()=> 'field-breeze-v1';}
+
+  for(const [type,parts] of batches){const [geo,color]=resources[type],plant=['leaf','bush','grass'].includes(type),mat=new T.MeshStandardMaterial({color,roughness:.92,metalness:['barrel','pipe'].includes(type)?.6:0,...(['wood','plank','crate'].includes(type)?{map:woodTexture}:['barrel','pipe'].includes(type)?{map:metalTexture}:{}),...(plant?{map:type==='grass'?grassTexture:leafTexture,alphaTest:.4,side:T.DoubleSide}: {})});const mesh=new T.InstancedMesh(geo,mat,parts.length);mesh.castShadow=type!=='grass';mesh.receiveShadow=true;mesh.instanceMatrix.setUsage(T.DynamicDrawUsage);mesh.name='Field '+type;if(plant){windMaterial(mat);mesh.customDepthMaterial=new T.MeshDepthMaterial({depthPacking:T.RGBADepthPacking,map:mat.map,alphaTest:mat.alphaTest,side:T.DoubleSide});windMaterial(mesh.customDepthMaterial);}
    parts.forEach((p,index)=>{mesh.setMatrixAt(index,p.matrix);if(!slots.has(p.id))slots.set(p.id,[]);slots.get(p.id).push({mesh,index,matrix:p.matrix});});mesh.computeBoundingSphere();group.add(mesh);
   }
   function destroy(id,fx=true){const item=items[id];if(!item||broken.has(id))return false;broken.add(id);for(const slot of slots.get(id)||[]){slot.mesh.setMatrixAt(slot.index,zero);slot.mesh.instanceMatrix.needsUpdate=true;}
    if(fx&&debris.length<70){for(let n=0;n<5;n++){const mesh=new T.Mesh(new T.BoxGeometry(.17,.12,.35),new T.MeshStandardMaterial({color:item.kind==='tree'||item.kind==='shrub'?0x6c8244:0x9c8659,roughness:1}));mesh.position.set(item.x,.5,item.z);group.add(mesh);debris.push({mesh,vx:(Math.random()-.5)*5,vz:(Math.random()-.5)*5,vy:2+Math.random()*3,t:0});}}return true;
   }
   function near(x,z){const ids=[];for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++){const id=bins.get((Math.floor(x/4)+dx)+','+(Math.floor(z/4)+dz)),v=items[id];if(v&&!broken.has(id)&&Math.hypot(v.x-x,v.z-z)<3.2)ids.push(id);}return ids;}
-  function update(dt){for(let i=debris.length-1;i>=0;i--){const d=debris[i];d.t+=dt;d.vy-=9*dt;d.mesh.position.x+=d.vx*dt;d.mesh.position.y+=d.vy*dt;d.mesh.position.z+=d.vz*dt;d.mesh.rotation.x+=dt*4;if(d.t>1.4){d.mesh.removeFromParent();d.mesh.geometry.dispose();d.mesh.material.dispose();debris.splice(i,1);}}}
+  function update(dt){breeze.value+=Math.min(dt,.05);for(let i=debris.length-1;i>=0;i--){const d=debris[i];d.t+=dt;d.vy-=9*dt;d.mesh.position.x+=d.vx*dt;d.mesh.position.y+=d.vy*dt;d.mesh.position.z+=d.vz*dt;d.mesh.rotation.x+=dt*4;if(d.t>1.4){d.mesh.removeFromParent();d.mesh.geometry.dispose();d.mesh.material.dispose();debris.splice(i,1);}}}
   function reset(){broken.clear();for(const ss of slots.values())for(const s of ss){s.mesh.setMatrixAt(s.index,s.matrix);s.mesh.instanceMatrix.needsUpdate=true;}}
-  function dispose(){group.traverse(o=>{o.geometry?.dispose();o.material?.dispose();});leafTexture.dispose();grassTexture.dispose();woodTexture.dispose();metalTexture.dispose();group.removeFromParent();debris.length=0;}
+  function dispose(){group.traverse(o=>{o.geometry?.dispose();o.material?.dispose();o.customDepthMaterial?.dispose();});leafTexture.dispose();grassTexture.dispose();woodTexture.dispose();metalTexture.dispose();group.removeFromParent();debris.length=0;}
   return {items,destroy,near,update,reset,dispose,broken};
  }
  return {generate,create,safeSpawn};
