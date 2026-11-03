@@ -1,2 +1,46 @@
-const path=require('path'),D=n=>require(process.env.VOXEL_TEST_DEPS?path.join(process.env.VOXEL_TEST_DEPS,n):n),{Server}=D('socket.io'),{io:client}=D('socket.io-client'),http=require('http'),assert=require('node:assert/strict'),install=require('../assistance-service');
-(async()=>{const web=http.createServer(),io=new Server(web),users={a:{username:'admin',role:'admin'},w:{username:'worker',role:'user'},b:{username:'bystander',role:'user'}},sockets=[],audit=[],service=install({io,authenticate:async token=>users[token],audit:async e=>audit.push(e)});try{await new Promise(r=>web.listen(0,'127.0.0.1',r));const connect=token=>new Promise((r,j)=>{const s=client('http://127.0.0.1:'+web.address().port+'/assistance',{auth:{token},reconnection:false});sockets.push(s);s.once('connect',()=>r(s));s.once('connect_error',j);}),rpc=(s,n,d={})=>new Promise((r,j)=>s.timeout(3000).emit(n,d,(e,v)=>e?j(e):r(v)));const a=await connect('a'),w=await connect('w'),b=await connect('b');assert(!(await rpc(b,'start',{target:'worker'})).ok);let begin,command,frame;w.on('begin',d=>begin=d);w.on('command',d=>command=d);a.on('frame',d=>frame=d);const start=await rpc(a,'start',{target:'worker'});assert(start.ok);const id=start.session.id;await new Promise(r=>setTimeout(r,60));assert.equal(begin.id,id);assert(!(await rpc(a,'command',{id,kind:'click',x:.5,y:.5})).ok,'no commands until native ready');assert(!(await rpc(b,'ready',{id})).ok);assert((await rpc(w,'ready',{id})).ok);assert(!(await rpc(b,'command',{id,kind:'click',x:.5,y:.5})).ok);assert(!(await rpc(a,'command',{id,kind:'url',url:'file:///C:/x'})).ok);assert(!(await rpc(a,'command',{id,kind:'move',x:4,y:1})).ok);assert((await rpc(a,'command',{id,kind:'move',x:.25,y:.75})).ok);await new Promise(r=>setTimeout(r,60));assert.equal(command.x,.25);assert((await rpc(a,'command',{id,kind:'url',url:'https://example.com/'})).ok);await new Promise(r=>setTimeout(r,60));assert.equal(command.url,'https://example.com/');w.emit('frame',{id,dataUrl:'data:image/jpeg;base64,AAAA'});await new Promise(r=>setTimeout(r,100));assert.equal(frame.id,id);await rpc(b,'stop',{id});assert(service.sessions.has(id),'outsider cannot stop or control');await rpc(w,'stop',{id});assert(!service.sessions.has(id));assert(!(await rpc(a,'command',{id,kind:'click',x:.5,y:.5})).ok);assert.equal(audit.length,2);console.log('PASS: authenticated admin, native readiness, actor isolation, URL/coordinate validation, frames, worker stop, audit');}finally{service.stop();for(const s of sockets)s.disconnect();await new Promise(r=>io.close(r));}})().catch(e=>{console.error(e);process.exitCode=1;});
+const path=require('path'),D=n=>require(process.env.VOXEL_TEST_DEPS?path.join(process.env.VOXEL_TEST_DEPS,n):n);
+const {Server}=D('socket.io'),{io:client}=D('socket.io-client'),http=require('http'),assert=require('node:assert/strict'),install=require('../assistance-service');
+const pause=ms=>new Promise(r=>setTimeout(r,ms));
+(async()=>{
+ const web=http.createServer(),io=new Server(web),users={a:{username:'admin',role:'admin'},w:{username:'worker',role:'user'},b:{username:'bystander',role:'user'}},sockets=[],audit=[];
+ const service=install({io,authenticate:async token=>users[token],audit:async e=>audit.push(e)});
+ try{
+  await new Promise(r=>web.listen(0,'127.0.0.1',r));
+  const connect=(token,protocol=2)=>new Promise((r,j)=>{const s=client('http://127.0.0.1:'+web.address().port+'/assistance',{auth:{token,protocol},transports:['websocket'],reconnection:false});sockets.push(s);s.once('connect',()=>r(s));s.once('connect_error',j);});
+  const rpc=(s,n,d={})=>new Promise((r,j)=>s.timeout(3500).emit(n,d,(e,v)=>e?j(e):r(v)));
+  const a=await connect('a'),w=await connect('w'),b=await connect('b'),old=await connect('a',1);
+  assert(!(await rpc(b,'start',{target:'worker'})).ok);assert(!(await rpc(old,'start',{target:'worker'})).ok);
+  let begin,commands=[],signals=[],frame,frameAck;
+  w.on('begin',d=>begin=d);w.on('command',d=>commands.push(d));a.on('signal',d=>signals.push(d));a.on('frame',(d,ack)=>{frame=d;frameAck=ack;});
+  const start=await rpc(a,'start',{target:'worker'});assert(start.ok,start.error);const id=start.session.id;
+  await pause(40);assert.equal(begin.id,id);
+  assert(!(await rpc(a,'command',{id,kind:'down',button:0,x:.5,y:.5})).ok);
+  assert(!(await rpc(b,'ready',{id})).ok);assert((await rpc(w,'ready',{id})).ok);
+  assert(!(await rpc(b,'command',{id,kind:'key',code:'KeyA'})).ok);
+  assert(!(await rpc(a,'command',{id,kind:'url',url:'file:///C:/x'})).ok);
+  assert(!(await rpc(a,'command',{id,kind:'move',x:4,y:1})).ok);
+  assert(!(await rpc(a,'command',{id,kind:'key',code:'arbitrary'})).ok);
+  assert(!(await rpc(a,'command',{id,kind:'paste',text:'x'.repeat(20001)})).ok);
+  assert(!(await rpc(a,'command',{id,kind:'key',code:'F12',ctrl:true,alt:true})).ok);
+  for(const d of [{kind:'down',button:0,x:.25,y:.75},{kind:'up',button:0,x:.75,y:.25},{kind:'key',code:'KeyA',ctrl:true},{kind:'text',text:'Привет 🙂'},{kind:'paste',text:'Строка\nиз буфера'},{kind:'url',url:'https://example.com/'}])assert((await rpc(a,'command',{id,...d})).ok);
+  await pause(40);assert.equal(commands.find(c=>c.kind==='text').text,'Привет 🙂');assert.equal(commands.find(c=>c.kind==='paste').text,'Строка\nиз буфера');
+  assert(!(await rpc(b,'signal',{id,type:'offer',sdp:'x'})).ok);
+  assert(!(await rpc(a,'signal',{id,type:'offer',sdp:'x'})).ok);
+  assert((await rpc(w,'signal',{id,type:'offer',sdp:'v=0'})).ok);
+  await pause(30);assert.equal(signals[0].sdp,'v=0');
+  assert(!(await rpc(b,'quality',{id,quality:'economy'})).ok);
+  const bytes=Buffer.from([255,216,10,20,255,217]);
+  const first=rpc(w,'frame',{id,seq:1,bytes});await pause(40);
+  assert(Buffer.isBuffer(frame.bytes));assert.equal(frame.seq,1);
+  assert(!(await rpc(w,'frame',{id,seq:2,bytes})).ok,'one frame in flight');
+  frameAck({seq:1});assert((await first).ok);
+  service.sessions.get(id).windowAt=Date.now();service.sessions.get(id).moves=0;for(let i=0;i<80;i++)a.emit('pointer',{id,kind:'move',x:i/80,y:.5});
+  await rpc(a,'command',{id,kind:'release'});await pause(120);const moves=commands.filter(c=>c.kind==='move');assert(moves.length<=40,'bounded movement forwarding: '+moves.length);
+  assert((await rpc(a,'command',{id,kind:'release'})).ok);
+  await rpc(b,'stop',{id});assert(service.sessions.has(id));
+  await rpc(w,'stop',{id});assert(!service.sessions.has(id));
+  assert(!(await rpc(a,'command',{id,kind:'text',text:'late'})).ok);
+  assert.equal(audit.length,2);
+  console.log('PASS: roles/version gate, mouse drag, keyboard/Cyrillic/paste bounds, stop key, WebRTC signaling, binary frame backpressure, bounded pointer flood, revocation and audit');
+ }finally{service.stop();sockets.forEach(s=>s.disconnect());await new Promise(r=>io.close(r));}
+})().catch(e=>{console.error(e);process.exitCode=1;});
