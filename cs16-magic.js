@@ -1,0 +1,7 @@
+(function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;if(root)root.CS16Magic=api;})(typeof window!=='undefined'?window:null,()=>{
+ 'use strict';
+ const spells=Object.freeze({flame:{name:'Солнечный взрыв',detail:'До 85 урона в радиусе 5 м · прицел · 70 сек',cooldown:70000,color:'#ff914e'},frost:{name:'Ледяная волна',detail:'30 урона и замедление на 5 сек · 12 м · 60 сек',cooldown:60000,color:'#8be1ff'},wind:{name:'Порыв ветра',detail:'Рывок до 9 м в направлении взгляда · 45 сек',cooldown:45000,color:'#73edc2'},stone:{name:'Каменная эгида',detail:'Поглощает до 100 урона за 7 сек · 75 сек',cooldown:75000,color:'#edc078'},light:{name:'Свет рассвета',detail:'Лечит 60 HP себе и союзникам в 7 м · 75 сек',cooldown:75000,color:'#fff2a7'}});
+ const pets=Object.freeze({fox:{name:'Искра',species:'Лисёнок',detail:'Мгновенная перезарядка из запаса',color:'#ffae72'},dragon:{name:'Уголёк',species:'Дракончик',detail:'Огненный снаряд: до 50 урона, радиус 3 м',color:'#ed8774'},owl:{name:'Вихрь',species:'Сова',detail:'Бег быстрее на 45% в течение 6 сек',color:'#9edcfa'},golem:{name:'Крош',species:'Голем',detail:'Щит на 5 сек, поглощает 60 урона',color:'#a8d4b1'},deer:{name:'Люми',species:'Дух-олень',detail:'Мгновенно восстанавливает 45 HP',color:'#d8b7ff'}});
+ const petValid=id=>typeof id==='string'&&Object.hasOwn(pets,id);
+ return {spells,pets,petValid,petCooldown:60000};
+});

@@ -35,3 +35,6 @@
 - HubVoxelFurnace: ключ `<storage>/x,y,z`, общая очередь максимум 8 заданий. `smelt {at,id}` атомарно расходует ингредиенты/топливо и записывает readyAt и снимок результата. `furnace {at}` возвращает серверное время, `collect_furnace {at}` атомарно забирает завершённое. Можно забрать чужую плавку в общем мире. Разрушение непустой печи запрещено.
 - Плавка продолжается при выходе и перезапуске сервера. Сброс мира архивирует печи по прежнему storage вместе с блоками, инвентарями и метаданными.
 - Проверки: `node --test voxel-core.test.js`, `VOXEL_TEST_DEPS=<...>/node_modules node tools/voxel-survival-integration.cjs`. Тесты используют отдельную временную MongoDB, не рабочий сервер.
+
+3.44.0: protocol 2 adds persistent animals, four swords and always-on server-checked melee PvP. Flow cells 29–36 are stored as chunk overrides, with fluidPending marking resumable simulation. Buckets swap sources transactionally. Animal tombstones prevent repeated loot after restart. The world seed/storage pointer is unchanged by upgrading. Chests, farm crops and worn equipment are persisted; only the explicit owner reset creates a new generation. Environment updates are bounded to 96 flow cells/tick and 96 animals globally, with 24 nearest animals sent per player.
+
