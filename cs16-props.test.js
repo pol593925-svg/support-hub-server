@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),Props=require('./cs16-props');
 test('map props are deterministic; destruction needs a nearby seated tank; duplicates and remote IDs rejected',()=>{
- const source=fs.readFileSync(__dirname+'/server.js','utf8'),ctx={};vm.runInNewContext(source.slice(source.indexOf('const CS16_MAP_ROWS ='),source.indexOf('// вейпоинты для ботов'))+'\nglobalThis.grid=CS16_GRID;',ctx);
+ const source=fs.readFileSync(__dirname+'/server.js','utf8'),ctx={require};vm.runInNewContext(source.slice(source.indexOf('const CS16_MAP_ROWS ='),source.indexOf('// вейпоинты для ботов'))+'\nglobalThis.grid=CS16_GRID;',ctx);
  for(const map of ['dust2','inferno']){const items=Props.generate(ctx.grid[map],map);assert(items.length>3000);assert.deepEqual(items,Props.generate(ctx.grid[map],map));assert(items.every(i=>ctx.grid[map][Math.floor(i.z/4)][Math.floor(i.x/4)]===0));const flags=require('./cs16-conquest').makeFlags(ctx.grid[map]);assert.equal(flags.length,5);assert(flags.every(f=>ctx.grid[map][Math.floor(f.z/4)][Math.floor(f.x/4)]===0));}
  const items=Props.generate(ctx.grid.dust2,'dust2'),first=items[0],p={alive:true,veh:{kind:'tank',inside:true,pos:[first.x,0,first.z]}};let handler;const sent=[],broken=new Set();
  vm.runInNewContext(source.slice(source.indexOf("  socket.on('cs16_props',"),source.indexOf("  socket.on('cs16_crew',")),{socket:{id:'pilot',on:(_,fn)=>handler=fn},cs16:{phase:'live',map:'dust2',players:new Map([['pilot',p]])},cs16Field:()=>items,cs16BrokenProps:broken,io:{emit:(n,d)=>sent.push(d)}});
@@ -9,6 +9,6 @@ test('map props are deterministic; destruction needs a nearby seated tank; dupli
 });
 test('late join receives map state before destroyed props snapshot',()=>{
  const source=fs.readFileSync(__dirname+'/server.js','utf8'),events=[];let join;
- vm.runInNewContext(source.slice(source.indexOf("  socket.on('cs16_join',"),source.indexOf("  socket.on('cs16_team',")),{socket:{id:'new',on:(n,f)=>{if(n==='cs16_join')join=f},emit:(n,d)=>events.push([n,d])},cs16:{map:'inferno',players:new Map()},cs16BrokenProps:new Set([4,8]),cs16Personal:()=>{},cs16Broadcast:()=>events.push(['cs16_state'])});
- join('newcomer');assert.equal(events[0][0],'cs16_state');assert.equal(events[1][0],'cs16_props');assert.deepEqual(Array.from(events[1][1].ids),[4,8]);
+ vm.runInNewContext(source.slice(source.indexOf("  socket.on('cs16_join',"),source.indexOf("  fieldEnvironment.attach(socket);")),{socket:{id:'new',on:(n,f)=>{if(n==='cs16_join')join=f},emit:(n,d)=>events.push([n,d])},cs16:{map:'inferno',players:new Map()},fieldEnvironment:{snapshot:()=>({map:'inferno'})},cs16BrokenProps:new Set([4,8]),cs16Personal:()=>{},cs16Broadcast:()=>events.push(['cs16_state'])});
+ join('newcomer');assert.equal(events[0][0],'cs16_state');assert.equal(events[1][0],'cs16_environment');assert.equal(events[2][0],'cs16_props');assert.deepEqual(Array.from(events[2][1].ids),[4,8]);
 });
