@@ -10,7 +10,7 @@ function view(show,now=Date.now()){
 }
 function install({io,app,mongoose,authenticate}){
   const db=mongoose.connection,shows=db.collection('cinema_show'),films=db.collection('cinema_tracks'),chat=db.collection('cinema_chat');
-  const ns=io.of('/cinema'),read=async()=>await shows.findOne({_id:'live'})||empty();
+  const ns=io.of('/cinema'),posters=io.of('/cinema-posters'),read=async()=>await shows.findOne({_id:'live'})||empty();
   const fail=(status,message)=>Object.assign(Error(message),{status});
   const error=(res,e)=>res.status(e.status||503).json({success:false,message:e.status?e.message:/quota|space limit/i.test(e.message)?'Хранилище для фильмов заполнено.':'Кинотеатр временно недоступен.'});
   const guard=owner=>async(req,res,next)=>{try{
@@ -43,11 +43,22 @@ function install({io,app,mongoose,authenticate}){
       else throw fail(400,'Неизвестное действие.');
     }
     const update={rev:old.rev+1,title,film,startsAt,position,playing,anchor:now};
+    if(cmd.op==='schedule')update.poster={id:update.rev,title,startsAt};
+    else if(cmd.op==='clear')update.poster=null;
     let result;try{result=await shows.updateOne({_id:'live',rev:old.rev},{$set:update},{upsert:old.rev===0});}catch(e){if(e.code!==11000)throw e;}
     if(!result?.matchedCount&&!result?.upsertedCount)throw fail(409,'Управление уже изменилось.');
-    const state=view(update);ns.emit('show',state);res.json(state);
+    const state=view(update);ns.emit('show',state);
+    if(cmd.op==='schedule')posters.emit('poster',{...update.poster,phase:state.phase});
+    res.json(state);
   }catch(e){error(res,e);}});
-  ns.use(async(socket,next)=>{try{const u=await authenticate(socket.handshake.auth?.token);if(!u)return next(Error('Войди в Support Hub заново.'));socket.data.nick=u.username;next();}catch{next(Error('Не удалось войти в кинозал.'));}});
+  const authorize=async(socket,next)=>{try{const u=await authenticate(socket.handshake.auth?.token);if(!u)return next(Error('Войди в Support Hub заново.'));socket.data.nick=u.username;next();}catch{next(Error('Не удалось войти в кинозал.'));}};
+  ns.use(authorize);posters.use(authorize);
+  posters.on('connection',async socket=>{
+    try{
+      const show=await read(),phase=view(show).phase;
+      if(socket.connected&&show.poster&&['countdown','playing'].includes(phase))socket.emit('poster',{...show.poster,phase});
+    }catch{/* Live announcements remain subscribed during a database outage. */}
+  });
   ns.on('connection',socket=>{
     let last=0;
     Promise.all([read(),chat.findOne({_id:'room'})]).then(([show,log])=>{socket.emit('show',view(show));socket.emit('history',log?.messages||[]);}).catch(()=>socket.emit('room_error','Не удалось загрузить кинозал.'));
