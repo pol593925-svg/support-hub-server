@@ -42,7 +42,7 @@ async function main(){
       if(cx===0)blocks[C.key(14,41,2)]=3;
       await models.Chunk.create({world,cx,cz:0,blocks});
     }
-    for(const [id,x] of [['alpha',15.5],['beta',16.5]])await models.Player.create({_id:id,pos:[x,40,4.5],inventory:{[oak]:2,[iron]:1,[C.lever]:1}});
+    for(const [id,x] of [['alpha',15.5],['beta',16.5]])await models.Player.create({_id:id,pos:[x,40,4.5],inventory:{6:3,[oak]:2,[iron]:1,[C.lever]:1}});
     let a=await connect('alpha'),b=await connect('beta');
     const rejected=await rpc(a,'edit',{action:'place',at:[14,40,2],block:oak});assert(!rejected.ok);assert.equal(await read(b,[14,40,2]),0);
     await pause(180);
@@ -64,6 +64,15 @@ async function main(){
     for(const at of [door,upper])assert(C.doorState(C.effectiveBlock((...p)=>ids.get(p.join())||0,...at)).open);
     await ok(a,'use_block',{at:signal,expected:C.leverOn});assert.equal(await read(b,signal),C.lever);
     const brokenSupport=await mine(b,[15,39,2]);assert.equal(brokenSupport.inventory[iron],2);assert.equal(await read(a,door),0);assert.equal(await read(a,upper),0);
+    const under=[15,40,4],build={action:'place',at:under,block:6};
+    assert(!(await rpc(a,'edit',build)).ok,'cannot place in own feet while standing');
+    const move=(s,pos)=>s.timeout(2500).emitWithAck('move',{pos,yaw:0});
+    assert(await move(a,[15.5,41.1,4.5]));assert(await move(b,[15.5,40,4.5]));await pause(175);
+    assert(!(await rpc(a,'edit',build)).ok,'cannot build inside the other player');
+    assert.equal((await models.Player.findById('alpha').lean()).inventory[6],3);
+    assert(await move(b,[16.5,40,4.5]));await pause(175);assert.equal((await ok(a,'edit',build)).inventory[6],2);
+    assert.equal(await read(b,under),6,'second player sees the scaffold');
+    console.log('PASS two-client jump placement, occupancy checks and inventory.');
     console.log('PASS two-client doors: placement conflicts, opening, stale actions, restart, power across chunks, single drop and support removal.');
   }finally{await stop();if(db)await db.stop();}
 }

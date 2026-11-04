@@ -197,7 +197,17 @@ module.exports=function install({io,mongoose,authenticate}){
    for(const id of players.keys())ns.sockets.get(id)?.leave(WORLD);players.clear();environment.clear();ns.emit('world_reset',{name:next.name});return {world:next};
   }));
   rpc('leave',()=>enqueue(async()=>{await leave(socket);return {};}));
-  socket.on('move',data=>{const p=players.get(socket.id);if(!p||p.flowerVisit||p.health<=0||!C.validPos(data?.pos))return;const now=Date.now(),dt=Math.min(2,(now-p.lastMove)/1000);if(dt<.075)return;if(Math.hypot(data.pos[0]-p.pos[0],data.pos[2]-p.pos[2])>dt*12+1){socket.emit('correct',p.pos);return;}const sprint=data.sprinting===true&&data.crouched!==true&&p.hunger>6;p.exhaustion+=Math.hypot(data.pos[0]-p.pos[0],data.pos[2]-p.pos[2])*(sprint?.1:.02);p.fallPeak=Math.max(p.fallPeak,data.pos[1]);p.pos=data.pos;p.crouched=data.crouched===true;p.yaw=Number.isFinite(data.yaw)?data.yaw:0;p.lastMove=now;socket.to(WORLD).volatile.emit('move',publicPlayer(p));});
+  socket.on('move',(data,ack)=>{
+   const reply=accepted=>{if(typeof ack==='function')ack(accepted);};
+   const p=players.get(socket.id);if(!p||p.flowerVisit||p.health<=0||!C.validPos(data?.pos))return reply(false);
+   const now=Date.now(),dt=Math.min(2,(now-p.lastMove)/1000);if(dt<.075)return reply(false);
+   if(Math.hypot(data.pos[0]-p.pos[0],data.pos[2]-p.pos[2])>dt*12+1){socket.emit('correct',p.pos);return reply(false);}
+   const sprint=data.sprinting===true&&data.crouched!==true&&p.hunger>6;
+   p.exhaustion+=Math.hypot(data.pos[0]-p.pos[0],data.pos[2]-p.pos[2])*(sprint?.1:.02);
+   p.fallPeak=Math.max(p.fallPeak,data.pos[1]);p.pos=data.pos;p.crouched=data.crouched===true;
+   p.yaw=Number.isFinite(data.yaw)?data.yaw:0;p.lastMove=now;
+   socket.to(WORLD).volatile.emit('move',publicPlayer(p));reply(true);
+  });
   socket.on('disconnect',()=>{enqueue(()=>leave(socket)).catch(e=>console.error('Voxel leave: '+e.message));});
  });
  let growing=false;const growthTimer=setInterval(()=>{if(growing||queued>=128)return;growing=true;enqueue(async()=>{const w=await world(),due=await Crop.find({world:storage(w),readyAt:{$lte:Date.now()}}).limit(64).lean();for(const crop of due){let change=null;await mongoose.connection.transaction(async session=>{const[x,y,z]=crop.at;if(await cell(x,y,z,w.seed,session)===27){const[cx,cz]=C.chunk(x,z),key=C.key(x,y,z),doc=await Chunk.findOneAndUpdate({world:storage(w),cx,cz},{$set:{['blocks.'+key]:28},$inc:{revision:1}},{upsert:true,returnDocument:'after',session}).lean();change={cx,cz,key,block:28,revision:doc.revision};}await Crop.deleteOne({_id:crop._id},{session});});if(change)ns.to(WORLD).emit('block',change);}}).catch(e=>console.error('Voxel crops: '+e.message)).finally(()=>growing=false);},5000);growthTimer.unref();
