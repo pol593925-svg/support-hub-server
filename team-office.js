@@ -17,6 +17,13 @@ function install({ app, mongoose, authenticate, Event, User }) {
   }, {timestamps:true});
   gathering.index({expires:1}, {expireAfterSeconds:0});
   gathering.index({team:1, start:1});
+  const device = new mongoose.Schema({
+    team: {type:String,required:true}, installation: {type:String,required:true},
+    name: {type:String,required:true}, registeredBy: {type:String,required:true},
+    inWork: {type:Boolean,default:false}, markedBy: {type:String,default:''}
+  });
+  device.index({team:1,installation:1},{unique:true});
+  const Device = mongoose.model('OfficeDevice',device);
   const Decision = mongoose.model('OfficeDecision', decision);
   const Match = mongoose.model('OfficeGathering', gathering);
   function route(method, endpoint, action) {
@@ -33,6 +40,36 @@ function install({ app, mongoose, authenticate, Event, User }) {
   }
   const fail = (res, status, message) => res.status(status).json({success:false, message});
 
+  const deviceView = '_id name registeredBy inWork markedBy';
+  route('get', '/devices', async (_req,res,team) => {
+    const devices = await Device.find({team},deviceView).sort({name:1,_id:1}).lean();
+    res.json({success:true,devices});
+  });
+  route('post', '/devices', async (req,res,team,nick) => {
+    const installation = req.body?.installation, name = clean(req.body?.name,64);
+    if (!id(installation) || !name) return fail(res,400,'Укажи название компьютера (до 64 символов).');
+    const filter = {team,installation};
+    let row;
+    try {
+      row = await Device.findOneAndUpdate(filter,{$setOnInsert:{name,registeredBy:nick}},
+        {upsert:true,returnDocument:'after',projection:deviceView}).lean();
+    } catch (err) {
+      if (err.code !== 11000) throw err;
+      row = await Device.findOne(filter,deviceView).lean();
+      if (!row) throw err;
+    }
+    res.json({success:true,device:row});
+  });
+  route('patch', '/devices/:id', async (req,res,team,nick) => {
+    const inWork = req.body?.inWork;
+    if (!id(req.params.id) || typeof inWork !== 'boolean') return fail(res,400,'Некорректная отметка.');
+    const filter = {_id:req.params.id,team};
+    let row = await Device.findOneAndUpdate({...filter,inWork:!inWork},
+      {$set:{inWork,markedBy:inWork?nick:''}},{returnDocument:'after',projection:deviceView}).lean();
+    if (!row) row = await Device.findOne(filter,deviceView).lean();
+    if (!row) return fail(res,404,'Компьютер не найден в твоей команде.');
+    res.json({success:true,device:row});
+  });
   route('get', '/decisions', async (req, res, team) => {
     const query = clean(req.query.q || '', 120);
     const filter = {team};
