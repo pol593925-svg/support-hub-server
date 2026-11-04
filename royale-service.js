@@ -1,13 +1,14 @@
 'use strict';
 const Match = require('./royale-match');
-module.exports = function install({ io, authenticate }) {
-  const ns = io.of('/royale'),
+module.exports = function install({ io, authenticate, protocol = 2 }) {
+  const geometry = protocol === 1 ? require('./royale-core-v1') : require('./royale-core');
+  const ns = io.of(protocol === 1 ? '/royale' : '/royale-v2'),
     rooms = new Map(),
     online = new Map();
   ns.use(async (socket, next) => {
     try {
       const user = await authenticate(socket.handshake.auth?.token);
-      if (!user?.username || socket.handshake.auth?.protocol !== 1)
+      if (!user?.username || socket.handshake.auth?.protocol !== protocol)
         return next(Error('Войдите в Support Hub и обновите приложение'));
       socket.data.brName = user.username;
       next();
@@ -16,7 +17,7 @@ module.exports = function install({ io, authenticate }) {
     }
   });
   for (const mode of ['solo', 'duo'])
-    rooms.set(mode, Match.create(mode, { event: (n, d) => ns.to(mode).emit(n, d) }));
+    rooms.set(mode, Match.create(mode, { geometry, event: (n, d) => ns.to(mode).emit(n, d) }));
   function exit(socket, explicit) {
     const room = rooms.get(socket.data.brMode);
     if (!room) return;

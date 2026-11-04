@@ -29,7 +29,7 @@ function place(p, x, z, y = 0) {
     lastShot: 0,
   });
 }
-test('413 city buildings have traversable street doors and reachable roof ladders; six metro ramps take real shots', () => {
+test('city buildings and valley cabins have traversable street doors and reachable roof ladders; six metro ramps take real shots', () => {
   assert(C.SIZE === 2000 && C.buildings.length > 400);
   for (const b of C.buildings) {
     for (const z of [b.front, b.back])
@@ -127,9 +127,9 @@ test('duo down, interrupted revive, successful revive, one actual duel and singl
   const a = r.members.get('A'),
     b = r.members.get('B'),
     e = r.members.get('C');
-  place(a, 100, 100);
-  place(b, 101.3, 100);
-  place(e, 100, 108);
+  place(a, 900, 900);
+  place(b, 901.3, 900);
+  place(e, 900, 908);
   function hit(victim, attacker) {
     victim.hp = 1;
     victim.armor = 0;
@@ -186,7 +186,7 @@ test('duo down, interrupted revive, successful revive, one actual duel and singl
   f.tick();
   assert.equal(a.status, 'chute');
   assert(a.usedDuel);
-  place(a, 100, 100);
+  place(a, 900, 900);
   b.status = 'out';
   hit(a, e);
   assert.equal(a.status, 'out', 'second death cannot enter another duel');
@@ -203,4 +203,25 @@ test('shrinking circle, last team standing and round reset', () => {
   f.tick(445);
   assert.equal(r.phase, 'lobby');
   assert.equal(r.members.size, 2);
+});
+
+test('winter valley is traversable, hills stop bullets, every stairwell joins the upper landing', () => {
+  assert.equal(C.buildings.length, 415);
+  assert.equal(C.landmarks.length, 6);
+  for (const h of C.buildings.filter((h) => h.hasStairs)) {
+    let y = 0;
+    for (let z = h.z - 4.3; z <= h.z + 4.5; z += 0.09) {
+      const floor = C.floor(h.stairX, z, y);
+      assert(floor - y < 0.22);
+      assert(C.clear(h.stairX, floor, z), 'stair ' + h.id);
+      y = floor;
+    }
+    assert(Math.abs(y - 3.8) < 0.01);
+  }
+  const x = 250,
+    z = C.riverZ(x);
+  assert(C.terrainHeight(x, z) < 1.3);
+  assert(C.terrainHeight(x, z + 70) > 14);
+  assert(C.ray([x, 2, z], [0, 0, 1], 90) < 70);
+  for (const l of C.landmarks) assert(C.vacant.has(Math.floor(l.z / 100) * 20 + Math.floor(l.x / 100)));
 });

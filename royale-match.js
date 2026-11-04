@@ -1,10 +1,14 @@
 'use strict';
-const C = require('./royale-core'),
+const currentGeometry = require('./royale-core'),
   combat = require('./cs16-combat');
 const live = new Set(['plane', 'fall', 'chute', 'ground', 'down']),
   dueling = new Set(['queue', 'duel']);
 const distance = (p, q) => Math.hypot(p.x - q.x, p.z - q.z, p.y - q.y);
-function create(mode, { now = Date.now, random = Math.random, event = () => {} } = {}) {
+function create(
+  mode,
+  { now = Date.now, random = Math.random, event = () => {}, geometry = currentGeometry } = {},
+) {
+  const C = geometry;
   const members = new Map();
   let phase = 'lobby',
     match = null,

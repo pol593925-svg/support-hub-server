@@ -1299,7 +1299,7 @@ const io = new Server(server, {
 // Список активных пользователей в чате
 const callsService=require('./calls-service')({app,io,User,Event});
 require('./voxel-service')({io,mongoose,authenticate:token=>callsService.actor(token)});
-require('./royale-service')({io,authenticate:token=>callsService.actor(token)});
+for(const protocol of [1,2])require('./royale-service')({io,protocol,authenticate:token=>callsService.actor(token)});
 require('./assistance-service')({io,authenticate:token=>callsService.actor(token),audit:data=>new Event({type:'remote_assistance',user:data.admin,date:todayStr(),data}).save()});
 let onlineUsers = new Map(); // socket.id -> nick
 

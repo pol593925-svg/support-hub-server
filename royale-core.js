@@ -91,7 +91,20 @@
       add(x, 2.9, zz, 3.6, 0.9, 0.32, 'base');
     }
     for (const xx of [b.left, b.right]) add(xx, 0, z, 0.32, 3.8, d, 'base');
-    add(x, 3.8, z, w, h - 3.8, d, 'facade' + kind);
+    b.hasStairs = kind === 0 || kind === 3;
+    if (!b.hasStairs) add(x, 3.8, z, w, h - 3.8, d, 'facade' + kind);
+    else {
+      // An actual stairwell opens onto a second-storey landing inside the facade.
+      for (const xx of [b.left, b.right]) add(xx, 3.8, z, 0.32, 2.86, d, 'facade' + kind);
+      for (const zz of [b.front, b.back]) add(x, 3.8, zz, w, 2.86, 0.32, 'facade' + kind);
+      add(x, 6.66, z, w, h - 6.66, d, 'facade' + kind);
+      const sw = 3.15,
+        sx = b.left + sw / 2 + 0.28;
+      add(b.left + sw + (w - sw) * 0.5, 3.55, z, w - sw, 0.25, d, 'painted');
+      for (const sign of [-1, 1]) add(sx, 3.55, z + sign * (d / 4 + 2), sw, 0.25, d / 2 - 4, 'painted');
+      for (let i = 0; i < 20; i++) add(sx, 0, z - 4 + (i + 0.5) * 0.4, sw, (i + 1) * 0.19, 0.4, 'stair');
+      b.stairX = sx;
+    }
     // Parapets leave a clear landing beside the ladder.
     for (const zz of [b.front, b.back]) add(x, h, zz, w, 0.66, 0.28, 'coping');
     add(b.left, h, z, 0.28, 0.66, d, 'coping');
@@ -112,11 +125,34 @@
     b.ladder = { x: b.right + 0.82, z, topX: b.right - 1.15, top: h };
     return b;
   }
+  function alpine(x, z) {
+    return x >= 0 && z >= 0 && x < 600 && z < 300;
+  }
+  function riverZ(x) {
+    return 143 + 34 * Math.sin(x * 0.0105) + 14 * Math.sin(x * 0.023 + 0.8);
+  }
+  // Move the northern housing blocks into vacant urban lots, keeping every street door and rooftop.
+  const transfers = new Map(),
+    empty = [];
+  for (let zz = 4; zz < 20; zz++)
+    for (let xx = 0; xx < 20; xx++) {
+      const id = zz * 20 + xx;
+      if (![109, 134, 244, 270, 275].includes(id) && rng(hash(xx, zz))() < 0.13) empty.push(id);
+    }
+  for (let zz = 0; zz < 3; zz++)
+    for (let xx = 0; xx < 6; xx++)
+      if (rng(hash(xx, zz))() >= 0.13) {
+        const from = zz * 20 + xx,
+          to = empty.pop();
+        transfers.set(from, to);
+        transfers.set(to, from);
+      }
   for (let az = 0; az < 20; az++)
     for (let ax = 0; ax < 20; ax++) {
       const r = rng(hash(ax, az)),
-        x = ax * 100 + 50,
-        z = az * 100 + 50;
+        cell = transfers.get(az * 20 + ax) ?? az * 20 + ax,
+        x = (cell % 20) * 100 + 50,
+        z = Math.floor(cell / 20) * 100 + 50;
       if (r() < 0.13) {
         lootSites.push([x, 0, z]);
         continue;
@@ -135,6 +171,163 @@
         building(x + 20, z + 7, 24, 32 + r() * 14, kind, height());
       } else building(x + (r() - 0.5) * 6, z + (r() - 0.5) * 6, 35 + r() * 22, 32 + r() * 24, kind, height());
     }
+  // Each landmark occupies an open block. Solid coordinates also drive the Blender kit.
+  const landmarks = [
+    {
+      key: 'relay',
+      name: 'Высота «Маяк»',
+      x: 350,
+      z: 350,
+      solids: [
+        [-5, 0, -5, 1.3, 5, 1.3],
+        [5, 0, -5, 1.3, 5, 1.3],
+        [-5, 0, 5, 1.3, 5, 1.3],
+        [5, 0, 5, 1.3, 5, 1.3],
+      ],
+    },
+    {
+      key: 'garden',
+      name: 'Зимний сад',
+      x: 950,
+      z: 550,
+      solids: [
+        [-12, 0, -6, 1, 8, 1],
+        [12, 0, -6, 1, 8, 1],
+        [-12, 0, 6, 1, 8, 1],
+        [12, 0, 6, 1, 8, 1],
+        [0, 0, -5, 10, 0.92, 2],
+        [0, 0, 5, 10, 0.92, 2],
+      ],
+    },
+    {
+      key: 'foundry',
+      name: 'Газгольдерная',
+      x: 1450,
+      z: 650,
+      solids: [
+        [-11, 0, 0, 7, 12, 7],
+        [5, 0, 0, 7, 15, 7],
+        [16, 0, -12, 2.2, 20, 2.2],
+      ],
+    },
+    {
+      key: 'station',
+      name: 'Сортировочная',
+      x: 450,
+      z: 1250,
+      solids: [
+        [-14, 0, -4, 0.62, 6, 0.62],
+        [-14, 0, 4, 0.62, 6, 0.62],
+        [0, 0, -4, 0.62, 6, 0.62],
+        [0, 0, 4, 0.62, 6, 0.62],
+        [14, 0, -4, 0.62, 6, 0.62],
+        [14, 0, 4, 0.62, 6, 0.62],
+        [0, 6, 0, 37, 0.32, 11],
+        [0, 0, 14, 16, 3.5, 3],
+      ],
+    },
+    {
+      key: 'market',
+      name: 'Крытый рынок',
+      x: 1050,
+      z: 1350,
+      solids: [
+        [-9, 0, -5, 5, 1, 2],
+        [0, 0, -5, 5, 1, 2],
+        [9, 0, -5, 5, 1, 2],
+        [-9, 0, 5, 5, 1, 2],
+        [0, 0, 5, 5, 1, 2],
+        [9, 0, 5, 5, 1, 2],
+      ],
+    },
+    {
+      key: 'port',
+      name: 'Контейнерный двор',
+      x: 1550,
+      z: 1350,
+      solids: [
+        [-18, 0, -9, 1.3, 19, 1.3],
+        [18, 0, -9, 1.3, 19, 1.3],
+        [-18, 0, 9, 1.3, 19, 1.3],
+        [18, 0, 9, 1.3, 19, 1.3],
+        [-8, 0, -4, 12.2, 2.6, 2.45],
+        [-8, 2.6, -4, 12.2, 2.6, 2.45],
+        [9, 0, 4, 12.2, 2.6, 2.45],
+        [8, 0, -12, 6.1, 2.6, 2.45],
+      ],
+    },
+  ];
+  const vacant = new Set();
+  for (let z = 0; z < 20; z++) for (let x = 0; x < 20; x++) vacant.add(z * 20 + x);
+  for (const h of buildings) vacant.delete(Math.floor(h.z / 100) * 20 + Math.floor(h.x / 100));
+  const parkGrid = new Map(),
+    landmarkBlocks = new Map(landmarks.map((l) => [Math.floor(l.z / 100) * 20 + Math.floor(l.x / 100), l]));
+  // A 10 m triangulated height field. Roads, doorways and metro entrances remain on level ground.
+  const cabins = [
+    [160, riverZ(160) + 28],
+    [430, riverZ(430) + 28],
+  ];
+  for (const id of vacant) {
+    const l = landmarkBlocks.get(id),
+      r = rng(hash(id, 117)),
+      phase = r() * 6.28,
+      peak = l ? (l.key === 'relay' ? 12 : 0) : 4 + r() * 9,
+      grid = new Float32Array(121);
+    for (let j = 0; j <= 10; j++)
+      for (let i = 0; i <= 10; i++) {
+        const dx = Math.abs(i - 5),
+          dz = Math.abs(j - 5),
+          edge = clamp((4.5 - Math.max(dx, dz)) / 2, 0, 1);
+        const smooth = edge * edge * (3 - 2 * edge),
+          shape = 0.79 + 0.21 * Math.sin(i * 0.65 + phase) * Math.cos(j * 0.62 - phase);
+        const wx = (id % 20) * 100 + i * 10,
+          wz = Math.floor(id / 20) * 100 + j * 10;
+        const fade = clamp((600 - wx) / 90, 0, 1) * clamp((300 - wz) / 60, 0, 1),
+          bank = Math.max(0, Math.abs(wz - riverZ(wx)) - 13);
+        const valley =
+          fade *
+          (Math.min(52, bank * 0.37) * (0.83 + 0.16 * Math.sin(wx * 0.014 + wz * 0.005)) +
+            Math.min(1, bank / 15) * (2.7 + 2.5 * Math.cos(wx * 0.053 + wz * 0.035)));
+        const grade = cabins.reduce(
+          (v, [cx, cz]) =>
+            Math.min(v, clamp((Math.max(Math.abs(wx - cx), Math.abs(wz - cz)) - 23) / 16, 0, 1)),
+          1,
+        );
+        grid[j * 11 + i] =
+          id % 20 < 6 && Math.floor(id / 20) < 3 ? valley * grade : smooth * peak * (l ? 1 : shape);
+      }
+    parkGrid.set(id, grid);
+  }
+  function terrainHeight(x, z) {
+    if (x < 0 || z < 0 || x >= SIZE || z >= SIZE) return 0;
+    const grid = parkGrid.get(Math.floor(z / 100) * 20 + Math.floor(x / 100));
+    if (!grid) return 0;
+    const u = (x % 100) / 10,
+      v = (z % 100) / 10,
+      i = Math.floor(u),
+      j = Math.floor(v),
+      fx = u - i,
+      fz = v - j,
+      n = j * 11 + i;
+    return fx + fz <= 1
+      ? grid[n] + fx * (grid[n + 1] - grid[n]) + fz * (grid[n + 11] - grid[n])
+      : grid[n + 12] + (1 - fx) * (grid[n + 11] - grid[n + 12]) + (1 - fz) * (grid[n + 1] - grid[n + 12]);
+  }
+  for (const [x, z] of cabins) {
+    const h = building(x, z, 17, 14, 0, 8.6);
+    h.cabin = true;
+  }
+  for (const spot of lootSites) if (spot[1] === 0) spot[1] = terrainHeight(spot[0], spot[2]);
+  for (const l of landmarks) {
+    const y = terrainHeight(l.x, l.z);
+    for (const [x, base, z, w, h, d] of l.solids) addBox(l.x + x, y + base, l.z + z, w, h, d, 'landmark');
+    for (const [x, z] of [
+      [-20, 18],
+      [20, -18],
+      [0, 22],
+    ])
+      lootSites.push([l.x + x, terrainHeight(l.x + x, l.z + z) + 0.04, l.z + z]);
+  }
   // Roadside vehicles and trees occupy the same positions used by hit and movement tests.
   for (let cz = 0; cz < 20; cz++)
     for (let cx = 0; cx < 20; cx++) {
@@ -144,29 +337,65 @@
         z = cz * 100 + 30 + rand() * 38;
       const kind = rand() < 0.26 ? 'van' : 'car',
         h = kind === 'van' ? 2.05 : 1.44;
-      props.push({
-        kind,
-        x,
-        z,
-        y: 0,
-        angle: rand() < 0.5 ? Math.PI : 0,
-        color: Math.floor(rand() * 5),
-        block: cz * 20 + cx,
-      });
-      addBox(x, 0, z, 1.9, 0.77, 4.5, 'vehicleBody');
-      addBox(x, 0.77, z, 1.68, h - 0.77, kind === 'van' ? 3.5 : 2.4, 'vehicleCab');
+      if (!alpine(x, z)) {
+        props.push({
+          kind,
+          x,
+          z,
+          y: 0,
+          angle: rand() < 0.5 ? Math.PI : 0,
+          color: Math.floor(rand() * 5),
+          block: cz * 20 + cx,
+        });
+        addBox(x, 0, z, 1.9, 0.77, 4.5, 'vehicleBody');
+        addBox(x, 0.77, z, 1.68, h - 0.77, kind === 'van' ? 3.5 : 2.4, 'vehicleCab');
+      }
       const treeX = cx * 100 + 50 + (rand() < 0.5 ? -37 : 37),
         treeZ = cz * 100 + 19 + rand() * 61;
-      props.push({
-        kind: 'tree',
-        x: treeX,
-        z: treeZ,
-        y: 0.1,
-        angle: rand() * 6.28,
-        color: 0,
-        block: cz * 20 + cx,
-      });
-      addBox(treeX, 0.1, treeZ, 0.38, 3.2, 0.38, 'trunk');
+      if (
+        !alpine(treeX, treeZ) ||
+        (Math.abs(treeZ - riverZ(treeX)) > 18 &&
+          !cabins.some(([xx, zz]) => Math.abs(xx - treeX) < 13 && Math.abs(zz - treeZ) < 12))
+      ) {
+        props.push({
+          kind: 'tree',
+          x: treeX,
+          z: treeZ,
+          y: 0.1,
+          angle: rand() * 6.28,
+          color: 0,
+          block: cz * 20 + cx,
+        });
+        props[props.length - 1].y = terrainHeight(treeX, treeZ);
+        addBox(treeX, props[props.length - 1].y, treeZ, 0.38, 3.2, 0.38, 'trunk');
+      }
+      // Wooded slopes and verges leave the buildings, ladders, landmarks and transit routes clear.
+      if (vacant.has(cz * 20 + cx)) {
+        for (let n = 0; n < 14; n++) {
+          const xx = cx * 100 + 13 + rand() * 74,
+            zz = cz * 100 + 13 + rand() * 74,
+            l = landmarkBlocks.get(cz * 20 + cx);
+          if (
+            alpine(xx, zz) &&
+            (Math.abs(zz - riverZ(xx)) < 18 ||
+              cabins.some(([x, z]) => Math.abs(x - xx) < 13 && Math.abs(z - zz) < 12))
+          )
+            continue;
+          if (l && Math.abs(xx - l.x) < 26 && Math.abs(zz - l.z) < 26) continue;
+          if (lootSites.some(([lx, ly, lz]) => Math.abs(xx - lx) < 1.8 && Math.abs(zz - lz) < 1.8)) continue;
+          const yy = terrainHeight(xx, zz);
+          props.push({
+            kind: 'tree',
+            x: xx,
+            z: zz,
+            y: yy,
+            angle: rand() * 6.28,
+            color: n % 3,
+            block: cz * 20 + cx,
+          });
+          addBox(xx, yy, zz, 0.35, 3.3, 0.35, 'trunk');
+        }
+      }
       if (cx >= 14 && cz % 3 === 0) {
         const px = cx * 100 + 17,
           pz = cz * 100 + 18;
@@ -174,6 +403,23 @@
         addBox(px, 0.1, pz, 1.6, 18, 1.6, 'chimney');
       }
     }
+  const rockRandom = rng(735191);
+  for (let i = 0; i < 90; i++) {
+    const x = 20 + rockRandom() * 554,
+      z = 20 + rockRandom() * 255;
+    if (
+      Math.abs(z - riverZ(x)) < 12 ||
+      cabins.some(([xx, zz]) => Math.abs(x - xx) < 14 && Math.abs(z - zz) < 13) ||
+      lootSites.some(([xx, , zz]) => Math.hypot(xx - x, zz - z) < 5)
+    )
+      continue;
+    const w = 1.8 + rockRandom() * 3.4,
+      h = w * (0.37 + 0.18 * rockRandom()),
+      d = w * 0.85,
+      y = terrainHeight(x, z);
+    props.push({ kind: 'rock', x, y, z, w, h, d, angle: rockRandom() * 6.28, block: 0 });
+    addBox(x, y, z, w * 0.8, h * 0.86, d * 0.81, 'boulder');
+  }
   const metro = [
     { x1: 400, x2: 1600, z1: 994, z2: 1006 },
     { x1: 794, x2: 806, z1: 600, z2: 1400 },
@@ -203,7 +449,7 @@
     const ramp = rampAt(x, z);
     if (ramp !== null) return ramp;
     if (prevY < -0.25 && underground(x, z)) return -8;
-    return 0;
+    return terrainHeight(x, z);
   }
   function nearby(x, z) {
     return index.get(Math.floor(z / 100) * 32 + Math.floor(x / 100)) || [];
@@ -220,7 +466,8 @@
     if (y < -0.5 && !underground(x, z) && rampAt(x, z) === null) return false;
     if (surface(x, z, y) > y + 0.42) return false;
     for (const b of nearby(x, z)) {
-      if (b.max[1] <= y + 0.35 || b.min[1] >= y + 1.7) continue;
+      const stepAllowance = b.mat === 'stair' ? 0.4 : 0.35;
+      if (b.max[1] <= y + stepAllowance || b.min[1] >= y + 1.7) continue;
       const dx = x - clamp(x, b.min[0], b.max[0]),
         dz = z - clamp(z, b.min[2], b.max[2]);
       if (dx * dx + dz * dz < r * r) return false;
@@ -327,6 +574,9 @@
           best = t;
           break;
         }
+      } else if (y >= 0 && y < terrainHeight(x, z)) {
+        best = t;
+        break;
       } else if (y < 0 && (!underground(x, z) || y < -8 || y > -0.35)) {
         best = t;
         break;
@@ -386,6 +636,11 @@
     return null;
   }
   return {
+    landmarks,
+    terrainHeight,
+    vacant,
+    alpine,
+    riverZ,
     props,
     buildingAt,
     SIZE,
