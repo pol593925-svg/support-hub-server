@@ -81,6 +81,7 @@ function create({mongoose,app,guard,get,enqueue,send,error,kind='radio'}){
     const t=await tracks.findOne({_id:req.params.id,ready:true});if(!t)throw fail(404,'Трек не найден.');
     send(res,await enqueue(publicTrack(t)));
   }catch(e){error(res,e);}});
+  if(film)app.use(prefix+'/uploads',guard(true),(_req,res)=>res.status(409).json({success:false,message:'Загрузка фильмов в рабочую базу отключена. Используй библиотеку на ПК Fifflaren.'}));
   app.put(prefix+'/uploads/:id',guard(true),async(req,res)=>{try{
     const id=req.params.id,{size,duration}=req.body,title=String(req.body.title||'').trim().slice(0,200);
     if(!validId(id)||!title||!Number.isSafeInteger(size)||size<1||!Number.isFinite(duration)||duration<=0)throw fail(400,'Проверь файл и длительность трека.');
