@@ -25,11 +25,11 @@
   }
   add(1.4,3.42,-1.8,8,.18,1.8,'floor');add(1.4,3.6,-1.8,8,.7,.1,'rail');for(const x of [1.4,9.3])add(x,3.6,-1.8,.1,.7,1.8,'rail');
   add(2,0,8,.55,3.35,.55,'wall');add(6.5,0,8,.55,3.35,.55,'wall');
- }boxes.push(...Terrain.bridges(grid));const passages=Passages.install(grid);boxes.push(...passages.boxes);const data={buildings,boxes,passages};Env.setup(data);cache.set(grid,data);return data;}
+ }boxes.push(...Terrain.bridges(grid));const passages=Passages.install(grid);boxes.push(...passages.boxes);const data={buildings,boxes,passages};Env.setup(data);Front.protect(grid,data.boxes);cache.set(grid,data);return data;}
  function contains(grid,map,x,z,margin=0){return layout(grid,map).buildings.some(b=>x>b.x-margin&&x<b.x+12+margin&&z>b.z-margin&&z<b.z+12+margin);}
  function rayBox(o,d,b,maxT){let lo=0,hi=maxT;for(let i=0;i<3;i++){if(Math.abs(d[i])<1e-9){if(o[i]<b.min[i]||o[i]>b.max[i])return null;continue;}let a=(b.min[i]-o[i])/d[i],c=(b.max[i]-o[i])/d[i];if(a>c)[a,c]=[c,a];lo=Math.max(lo,a);hi=Math.min(hi,c);if(hi<lo)return null;}return lo<=maxT?lo:null;}
  function activeBoxes(grid,map){const data=layout(grid,map);if(data.collisionRevision!==data.environment.revision||data.frontRevision!==(grid.frontDamage?.revision||0)){
-    data.frontRevision=grid.frontDamage?.revision||0;data.collisionBoxes=data.boxes.concat(Env.boxes(data));if(grid.frontDamage?.original.size)data.collisionBoxes=data.collisionBoxes.flatMap(b=>Front.clip(grid,b));data.collisionRevision=data.environment.revision;
+    data.frontRevision=grid.frontDamage?.revision||0;data.collisionBoxes=data.boxes.concat(Env.boxes(data));data.collisionRevision=data.environment.revision;
     data.sectors=new Map();
     for(const b of data.collisionBoxes){
       const key=Math.floor(b.min[0]/16)+','+Math.floor(b.min[2]/16);

@@ -10,14 +10,17 @@ function game(map,army,gm='assault',hitHuman=()=>{}){
  service.reset();return {g,state,service,events,results,frames};
 }
 for(const map of ['dust2','inferno','frontline']){
- test(map+' demolition opens geometry for walking, bullets and restores on round reset',()=>{
+ test(map+' structural cells stay solid for walking, bullets, charges and replicated blast data',()=>{
    const {g,service}=game(map,false);const b=B.layout(g,map).buildings[0],o=[b.x-2,1,b.z+5],d=[1,0,0];
    assert(B.ray(g,map,o,d,3)!==null);const p={team:'t',alive:true,lx:o[0],ly:-.5,lz:o[2]};
    assert.equal(service.requestCharge(p,d,10000),null);assert(service.requestCharge(p,d,10001));
-   service.tick(11900);assert(F.ruined(g,b.x+.2,b.z+5));assert.equal(B.ray(g,map,o,d,3),null);
-   assert.deepEqual(B.collide(g,map,b.x+.2,b.z+5,0,1.8,.35),[b.x+.2,b.z+5]);
-   const snap=service.snapshot(),copy=grid(map);B.layout(copy,map);F.apply(copy,snap.ids);
-   assert.equal(B.ray(copy,map,o,d,3),null);assert(T.height(copy,b.x+2,b.z+6)<0);
+   service.tick(11900);service.demolish([b.x+5,1,b.z+5],28);
+   assert.equal(F.ruined(g,b.x+.2,b.z+5),false);assert.notEqual(B.ray(g,map,o,d,3),null);
+   assert.notDeepEqual(B.collide(g,map,b.x+.2,b.z+5,0,1.8,.35),[b.x+.2,b.z+5]);
+   const snap=service.snapshot(),copy=grid(map);B.layout(copy,map);
+   const wallRow=copy.findIndex((r,z)=>z>0&&z<copy.length-1&&r.slice(1,-1).includes(1)),wallX=copy[wallRow].indexOf(1,1);
+   F.apply(copy,[...snap.ids,F.key(copy,b.x+.2,b.z+5),wallRow*copy[0].length+wallX]);
+   assert.equal(copy[wallRow][wallX],1);assert.notEqual(B.ray(copy,map,o,d,3),null);assert.equal(T.height(copy,b.x+2,b.z+6),0);
    service.reset();assert(B.ray(g,map,o,d,3)!==null);assert.equal(service.snapshot().ids.length,0);
  });
  test(map+' has 100 additional combatant slots; both allied aircraft accept one pilot each',()=>{

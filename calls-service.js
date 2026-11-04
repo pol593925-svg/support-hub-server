@@ -1,4 +1,5 @@
 const crypto=require('crypto'),workflow=require('./call-workflow');
+const {teamOf,requireTeam}=require('./work-team');
 const OWNER='fifflaren',OFFSET=3*3600000;
 function calendar(now=Date.now()){
  const local=new Date(now+OFFSET),day=local.toISOString().slice(0,10);
@@ -29,7 +30,7 @@ module.exports=function install({app,io,User,Event}){
   return user&&!user.isBanned&&(user.callsSessions||[]).some(s=>s.hash===hash(token)&&+new Date(s.expiresAt)>Date.now())?user:null;
  }
  const bearer=req=>String(req.headers.authorization||'').replace(/^Bearer /,'');
- async function ownerTeam(){const owner=await User.findOne({username:OWNER});return owner&&!owner.isBanned?(owner.team||OWNER).trim().toLowerCase():null;}
+ async function ownerTeam(){const owner=await User.findOne({username:OWNER});return owner&&!owner.isBanned?teamOf(owner):null;}
  async function allowed(token){return await valid(token)&&!!await ownerTeam();}
  function callRow(ev){return {id:String(ev._id),user:ev.user,createdAt:ev.createdAt,service:ev.data.serviceName||'',kind:ev.data.callType||'',link:ev.data.callLink||'',note:ev.data.callNote||'',status:['done','rejected','returned'].includes(ev.data.reviewStatus)?ev.data.reviewStatus:'pending',reason:ev.data.reviewReason||'',reviewedAt:ev.data.reviewedAt||null,version:ev.data.reviewVersion||0,history:ev.data.reviewHistory||[]};}
  const subscribers=new Map();
@@ -46,10 +47,10 @@ module.exports=function install({app,io,User,Event}){
    if(own||lead)entry.socket.emit(updated?'call_updated':lead?'fifflaren_call':'my_call',callRow(event));
   }
  }
- const teamOf=user=>String(user?.team||'').trim().toLowerCase();
+
  const logRow=e=>({id:String(e._id),user:e.user,createdAt:e.createdAt,link:e.data.link,comment:e.data.comment});
- app.get('/api/logs/team',async(req,res)=>{try{const user=await actor(bearer(req));if(!user||!teamOf(user))return res.status(403).json({success:false,message:'Войди в аккаунт своей команды.'});const events=await Event.find({type:'log','data.teamAtSubmission':teamOf(user),'data.verifiedLog':true}).sort({createdAt:-1,_id:-1}).limit(60);res.json({success:true,logs:events.map(logRow)});}catch{res.status(500).json({success:false,message:'Не удалось загрузить ленту'});}});
- app.post('/api/logs',async(req,res)=>{try{const user=await actor(bearer(req));if(!user||!teamOf(user))return res.status(403).json({success:false,message:'Войди в аккаунт своей команды.'});const link=String(req.body.link||'').trim(),comment=String(req.body.comment||'').trim();let url;try{url=new URL(link);}catch{}if(!url||!['http:','https:'].includes(url.protocol)||url.username||url.password||link.length>2048||!comment||comment.length>3000)return res.status(400).json({success:false,message:'Проверь ссылку и описание (до 3000 символов).'});const event=new Event({user:user.username.toLowerCase(),type:'log',date:calendar().day,data:{link,linkKey:workflow.linkKey(link),comment,teamAtSubmission:teamOf(user),verifiedLog:true}});await event.save();res.json({success:true,log:logRow(event)});for(const [id,entry]of subscribers){try{const member=await actor(entry.token);if(!member){subscribers.delete(id);continue;}if(teamOf(member)===teamOf(user))entry.socket.emit('team_log',logRow(event));}catch{}}}catch{if(!res.headersSent)res.status(500).json({success:false,message:'Не удалось сохранить лог'});}});
+ app.get('/api/logs/team',async(req,res)=>{try{const user=await actor(bearer(req));if(!requireTeam(user,res))return;const events=await Event.find({type:'log','data.teamAtSubmission':teamOf(user),'data.verifiedLog':true}).sort({createdAt:-1,_id:-1}).limit(60);res.json({success:true,logs:events.map(logRow)});}catch{res.status(500).json({success:false,message:'Не удалось загрузить ленту'});}});
+ app.post('/api/logs',async(req,res)=>{try{const user=await actor(bearer(req));if(!requireTeam(user,res))return;const link=String(req.body.link||'').trim(),comment=String(req.body.comment||'').trim();let url;try{url=new URL(link);}catch{}if(!url||!['http:','https:'].includes(url.protocol)||url.username||url.password||link.length>2048||!comment||comment.length>3000)return res.status(400).json({success:false,message:'Проверь ссылку и описание (до 3000 символов).'});const event=new Event({user:user.username.toLowerCase(),type:'log',date:calendar().day,data:{link,linkKey:workflow.linkKey(link),comment,teamAtSubmission:teamOf(user),verifiedLog:true}});await event.save();res.json({success:true,log:logRow(event)});for(const [id,entry]of subscribers){try{const member=await actor(entry.token);if(!member){subscribers.delete(id);continue;}if(teamOf(member)===teamOf(user))entry.socket.emit('team_log',logRow(event));}catch{}}}catch{if(!res.headersSent)res.status(500).json({success:false,message:'Не удалось сохранить лог'});}});
  app.get('/api/calls/mine',async(req,res)=>{
   try{const user=await actor(bearer(req));if(!user)return res.status(403).json({success:false,message:'Войди заново, чтобы увидеть свои колы.'});
    const page=Math.max(0,Math.floor(Number(req.query.page)||0)),limit=100,filter={type:'call',user:user.username.toLowerCase()};

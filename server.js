@@ -421,7 +421,7 @@ app.post('/api/events', async (req, res) => {
       const token=String(req.headers.authorization||'').replace(/^Bearer /,'');
       if(token){const actor=await callsService.actor(token);if(!actor||actor.username.toLowerCase()!==String(user||'').trim().toLowerCase())return res.status(403).json({success:false,message:'Войди заново для отправки колла.'});}
       const sender=await User.findOne({username:String(user||'').trim().toLowerCase()});
-      fields.teamAtSubmission=String(sender?.team||'').trim().toLowerCase();
+      fields.teamAtSubmission=require('./work-team').teamOf(sender);
       fields.reviewHistory=[{at:new Date(),by:String(user||'').trim().toLowerCase(),action:'submitted',...require('./call-workflow').snapshot(fields)}];
     }
     if (!type) {
@@ -1311,7 +1311,8 @@ const io = new Server(server, {
 // Список активных пользователей в чате
 const callsService=require('./calls-service')({app,io,User,Event});
 require('./team-access')({app,io,User,onlineUsers:()=>onlineUsers,authenticate:token=>callsService.actor(token)});
-require('./radio-service').install({app,mongoose,authenticate:token=>callsService.actor(token)});
+require('./radio-service').install({app,io,mongoose,authenticate:token=>callsService.actor(token)});
+require('./cinema-service').install({app,io,mongoose,authenticate:token=>callsService.actor(token)});
 require('./exchange-review')({app,Exchange,authenticate:token=>callsService.actor(token)});
 require('./team-office')({app,mongoose,User,Event,authenticate:token=>callsService.actor(token)});
 require('./voxel-service')({io,mongoose,authenticate:token=>callsService.actor(token)});
@@ -5476,5 +5477,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '4.0.5', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '4.0.6', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });

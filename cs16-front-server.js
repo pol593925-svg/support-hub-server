@@ -63,13 +63,7 @@ function create({state,grid,emit,frame,hitHuman,respawn,finish,credit,wipe,radia
  }
  function demolish(pos,r,exact=null){
    if(!g||state.phase!=='live'||!validPos(pos)||pos[1]>T.height(g,pos[0],pos[2])+13)return [];
-   const ids=F.apply(g,exact||F.footprint(g,pos[0],pos[2],r)),w=g[0].length;
-   for(const b of B.layout(g,state.map).buildings){
-     if(!ids.length||Math.abs(b.x+6-pos[0])>r+12||Math.abs(b.z+6-pos[2])>r+12)continue;
-     const x=Math.floor(b.x/4),z=Math.floor(b.z/4),floor=[];let supports=0;
-     for(let j=0;j<3;j++)for(let i=0;i<3;i++){const id=(z+j)*w+x+i;floor.push(id);if((i!==1||j!==1)&&F.damage(g).original.has(id))supports++;}
-     if(supports>=6)ids.push(...F.apply(g,floor));
-   }
+   const ids=F.apply(g,exact||F.footprint(g,pos[0],pos[2],r));
    if(ids.length){flows.clear();emit('cs16_front_break',{epoch,map:state.map,ids,pos});}return ids;
  }
  function damageArmy(u,n,by,now){
@@ -121,7 +115,7 @@ function create({state,grid,emit,frame,hitHuman,respawn,finish,credit,wipe,radia
    if(hit&&wall>=hit.t-.25){damageArmy(hit.u,w.dmg*(hit.u.kind==='foot'?1:.55)*(p.goldWeapon===d.weapon?1.35:1),p,now);emit('cs16_army_hit',{by:p.nick,id:hit.u.id,hp:Math.ceil(hit.u.hp)});return;}
    if(wall>=range-.05||d.weapon==='knife')return;
    const pos=d.origin.map((v,i)=>v+d.dir[i]*(wall+.12)),id=F.key(g,pos[0],pos[2]);
-   if(F.damage(g).original.has(id))return;
+   if(!F.breakable(g,id)||F.damage(g).original.has(id))return;
    const dmg=(chips.get(id)||0)+w.dmg;chips.set(id,dmg);
    if(dmg>=280){chips.delete(id);demolish(pos,0,[id]);}
  }

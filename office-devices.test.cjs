@@ -24,7 +24,7 @@ test('a workstation is registered once; only its team can see and mark the row',
     assert.equal(one.status,200);assert.equal(two.device._id,one.device._id);
     const second=await request('alex','','POST',{installation:'b'.repeat(24),name:'Место 2'});
     const path='/'+one.device._id;
-    assert.equal((await request('anonymous')).status,403);
+    assert.equal((await request('anonymous')).status,401);
     assert.equal((await request('alex')).devices.length,2);
     assert.deepEqual((await request('zoe')).devices,[]);
     assert.equal((await request('zoe',path,'PATCH',{inWork:true})).status,404);

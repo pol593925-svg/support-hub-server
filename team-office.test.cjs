@@ -28,12 +28,12 @@ function fixture() {
     await routes.get(verb+' /api/office/'+path)({headers:{authorization:'Bearer '+token},query:q,params,body},res);
     return res;
   }
-  return {run,articles,matches,matchId,updates};
+  return {run,articles,matches,matchId,updates,users};
 }
 test('decisions are owner-published, team scoped, searchable and keyed by resolved call',async()=>{
   const {run,articles,matchId,updates}=fixture();
   const body={callId:matchId,title:'Доступ',situation:'Нет ответа',solution:'Проверить статус запроса'};
-  assert.equal((await run('get','decisions','bad')).statusCode,403);
+  assert.equal((await run('get','decisions','bad')).statusCode,401);
   assert.equal((await run('post','decisions','member',body)).statusCode,403);
   assert.equal((await run('post','decisions','owner',{...body,callId:'bb'.repeat(12)})).statusCode,404);
   assert.equal((await run('post','decisions','owner',body)).statusCode,200);
@@ -42,6 +42,13 @@ test('decisions are owner-published, team scoped, searchable and keyed by resolv
   assert.equal((await run('get','decisions','other')).data.items.length,0);
   await run('get','decisions','member',{}, {},{q:'a+b'});
   assert.equal(updates.at(-1).$or[0].title.$regex,'a\\+b');
+});
+test('owner uses the existing Fifflaren team when unassigned; other users require membership',async()=>{
+  const {run,users,updates}=fixture();users.owner.team='';users.member.team=' ';
+  assert.equal((await run('get','decisions','owner')).statusCode,200);
+  assert.equal(updates.at(-1).team,'fifflaren');
+  const noTeam=await run('get','decisions','member');assert.equal(noTeam.statusCode,403);assert.match(noTeam.data.message,/не назначена команда/);
+  const anonymous=await run('get','decisions','unknown');assert.equal(anonymous.statusCode,401);assert.match(anonymous.data.message,/Сессия/);
 });
 test('match retries, team roster, time window and organizer cancellation',async()=>{
   const {run,matches,matchId}=fixture(),params={id:matchId},body={id:matchId,map:'inferno',start:Date.now()+60000};

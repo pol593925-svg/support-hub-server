@@ -1,6 +1,6 @@
 'use strict';
 const owner = 'fifflaren';
-const teamOf = user => String(user?.team || '').trim().toLowerCase();
+const {teamOf,requireTeam} = require('./work-team');
 const nickOf = user => user.username.toLowerCase();
 const clean = (v, limit) => typeof v === 'string' && v.trim().length <= limit ? v.trim() : '';
 const id = v => typeof v === 'string' && /^[a-f\d]{24}$/i.test(v);
@@ -31,8 +31,8 @@ function install({ app, mongoose, authenticate, Event, User }) {
       try {
         const token = String(req.headers.authorization || '').replace(/^Bearer /, '');
         const user = await authenticate(token);
-        if (!user || !teamOf(user)) return res.status(403).json({success:false,message:'Войди в аккаунт своей команды.'});
-        await action(req, res, teamOf(user), nickOf(user));
+        const team = requireTeam(user,res);
+        if (team) await action(req, res, team, nickOf(user));
       } catch {
         res.status(500).json({success:false,message:'Не удалось обновить штаб. Попробуй ещё раз.'});
       }
@@ -86,7 +86,7 @@ function install({ app, mongoose, authenticate, Event, User }) {
     const title = clean(req.body.title,100), situation = clean(req.body.situation,1000), solution = clean(req.body.solution,1500);
     if (!id(callId) || !title || !situation || !solution) return fail(res,400,'Заполни название, ситуацию и решение.');
     const call = await Event.findOne({_id:callId,type:'call','data.reviewStatus':'done'}, 'data.teamAtSubmission user').lean();
-    const callTeam = call?.data?.teamAtSubmission ?? (call ? teamOf(await User.findOne({username:call.user}, 'team')) : '');
+    const callTeam = call?.data?.teamAtSubmission ?? (call ? teamOf(await User.findOne({username:call.user}, 'team username')) : '');
     if (!call || callTeam !== team) return fail(res,404,'Выбери сделанный колл своей команды.');
     const update = {$set:{title,situation,solution}};
     try { await Decision.updateOne({team,callId},update,{upsert:true}); }

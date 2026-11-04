@@ -2,10 +2,22 @@
  'use strict';
  const cell=4, key=(grid,x,z)=>Math.floor(z/cell)*grid[0].length+Math.floor(x/cell);
  function damage(grid){return grid.frontDamage||(grid.frontDamage={original:new Map(),revision:0});}
+ function protect(grid,boxes){
+   const d=damage(grid),cells=new Set(),w=grid[0].length;
+   for(const b of boxes){
+     for(let z=Math.max(0,Math.floor((b.min[2]-.15)/cell));z<=Math.min(grid.length-1,Math.floor((b.max[2]+.15)/cell));z++)
+       for(let x=Math.max(0,Math.floor((b.min[0]-.15)/cell));x<=Math.min(w-1,Math.floor((b.max[0]+.15)/cell));x++)cells.add(z*w+x);
+   }
+   d.structures=cells;
+ }
+ function breakable(grid,id){
+   const w=grid[0].length,v=grid[Math.floor(id/w)]?.[id%w];
+   return (v===0||v===2||v===3)&&!grid.frontDamage?.structures?.has(id);
+ }
  function reset(grid){const d=damage(grid),w=grid[0].length;for(const [id,v] of d.original)grid[Math.floor(id/w)][id%w]=v;d.original.clear();d.crater=null;d.revision++;}
  function apply(grid,ids){const d=damage(grid),w=grid[0].length,added=[];
    for(const id of ids){if(!Number.isInteger(id)||id<0||id>=w*grid.length||d.original.has(id))continue;
-     const x=id%w,z=Math.floor(id/w);if(x<1||z<1||x>=w-1||z>=grid.length-1)continue;
+     const x=id%w,z=Math.floor(id/w);if(x<1||z<1||x>=w-1||z>=grid.length-1||!breakable(grid,id))continue;
      d.original.set(id,grid[z][x]);grid[z][x]=0;added.push(id);
    }if(added.length)d.revision++;return added;
  }
@@ -68,5 +80,5 @@
    return rows.map(row=>row.join(''));
  }
  function setCrater(grid,c){const d=damage(grid);d.crater=c;d.revision++;}
- return {damage,apply,reset,footprint,ruined,depth,clip,key,openCell,sectors,district,setCrater};
+ return {damage,protect,breakable,apply,reset,footprint,ruined,depth,clip,key,openCell,sectors,district,setCrater};
 });

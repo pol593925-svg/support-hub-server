@@ -40,7 +40,37 @@ function change(station, command, now) {
   }
   s.rev++;return s;
 }
-function install({app,mongoose,authenticate}){
+function installAudience(io,authenticate){
+  const ns=io.of('/radio'),listeners=new Map();
+  const roster=()=>Array.from(listeners.values(),entry=>entry.name).sort((a,b)=>a.localeCompare(b,'ru'));
+  let changed;
+  function broadcast(){
+    if(changed)return;
+    changed=setTimeout(()=>{changed=null;ns.emit('audience',roster());},80);
+  }
+  ns.use(async(socket,next)=>{
+    try{
+      const user=await authenticate(socket.handshake.auth?.token);
+      if(!user?.username)return next(Error('Войди в Support Hub, чтобы видеть слушателей.'));
+      socket.data.radioName=user.username;next();
+    }catch{next(Error('Радио временно недоступно.'));}
+  });
+  ns.on('connection',socket=>{
+    const name=socket.data.radioName,key=name.toLowerCase();let active=false;
+    socket.emit('audience',roster());
+    function listening(on){
+      if(typeof on!=='boolean'||active===on)return;
+      active=on;
+      const count=(listeners.get(key)?.count||0)+(on?1:-1);
+      if(count>0)listeners.set(key,{name,count});else listeners.delete(key);
+      if(on?count===1:count===0)broadcast();
+    }
+    socket.on('listening',listening);
+    socket.on('disconnect',()=>listening(false));
+  });
+}
+function install({app,io,mongoose,authenticate}){
+  if(io)installAudience(io,authenticate);
   const station=mongoose.connection.collection('radio_station'), audio=mongoose.connection.collection('radio_audio');
   const get=async()=>await station.findOne({_id:'live'})||{_id:'live',...empty()};
   const send=(res,s,compact=false)=>{
