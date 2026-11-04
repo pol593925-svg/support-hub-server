@@ -23,6 +23,7 @@ mongoose.connect(MONGO_URI).then(() => {
 
 // Схема пользователя
 const userSchema = new mongoose.Schema({
+  offboardedAt: {type:Date,default:null},
   callsSessions: {type:[{hash:String,expiresAt:Date}],default:[],select:false},
   username: { type: String, required: true, unique: true, lowercase: true },
   password: { type: String, required: true },
@@ -59,6 +60,7 @@ const Team = mongoose.model('Team', teamSchema);
 
 // Схема записи справочника бирж
 const exchangeSchema = new mongoose.Schema({
+  sourceUrl:String,verifiedAt:Date,verifiedBy:String,needsReview:{type:Boolean,default:false},
   website: {type:String,default:''},
   logo: {type:String,default:''},
   section: { type: String, enum: ['yes', 'condition', 'no'], required: true },
@@ -79,6 +81,7 @@ const eventSchema = new mongoose.Schema({
 });
 eventSchema.index({ date: 1, type: 1 });
 eventSchema.index({ user: 1, date: 1 });
+eventSchema.index({'data.teamAtSubmission':1,'data.linkKey':1,createdAt:-1},{partialFilterExpression:{'data.linkKey':{$type:'string'}}});
 const Event = mongoose.model('Event', eventSchema);
 
 // Схема дневной статистики (трюфеля / апрувы, вбивает админ вручную)
@@ -173,7 +176,7 @@ async function verifyAdmin(req, res, next) {
       return res.status(401).json({ success: false, message: 'Не указан админ' });
     }
     const admin = await User.findOne({ username: adminName });
-    if (!admin || admin.role !== 'admin') {
+    if (!admin || admin.isBanned || admin.offboardedAt || admin.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Нет прав администратора' });
     }
     next();
@@ -298,6 +301,10 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Неверный логин или пароль!' });
     }
 
+    if(user.offboardedAt){
+      const verified=await bcrypt.compare(password,user.password);
+      return res.status(403).json({success:false,offboarded:verified,message:'Доступ закрыт.'});
+    }
     if (user.isBanned) {
       return res.status(403).json({ success: false, message: 'Ваш аккаунт заблокирован администратором!' });
     }
@@ -353,7 +360,7 @@ app.post('/api/moderate/ban', async (req, res) => {
 
     username = username.trim().toLowerCase();
     const user = await User.findOneAndUpdate(
-      { username },
+      { username,offboardedAt:null },
       { isBanned },
       { returnDocument: "after" }
     );
@@ -406,12 +413,16 @@ app.get('/api/admin/users', verifyAdmin, async (req, res) => {
 app.post('/api/events', async (req, res) => {
   try {
     const { user, type, date, ...fields } = req.body;
+    if(type==='log'){delete fields.verifiedLog;delete fields.teamAtSubmission;delete fields.linkKey;}
     if(type==='call'){
+      delete fields.reviewHistory;delete fields.resubmittedAt;fields.reviewVersion=0;
+      fields.linkKey=require('./call-workflow').linkKey(fields.callLink);
       fields.reviewStatus='pending';fields.reviewReason='';delete fields.reviewedAt;delete fields.reviewedBy;
       const token=String(req.headers.authorization||'').replace(/^Bearer /,'');
       if(token){const actor=await callsService.actor(token);if(!actor||actor.username.toLowerCase()!==String(user||'').trim().toLowerCase())return res.status(403).json({success:false,message:'Войди заново для отправки колла.'});}
       const sender=await User.findOne({username:String(user||'').trim().toLowerCase()});
       fields.teamAtSubmission=String(sender?.team||'').trim().toLowerCase();
+      fields.reviewHistory=[{at:new Date(),by:String(user||'').trim().toLowerCase(),action:'submitted',...require('./call-workflow').snapshot(fields)}];
     }
     if (!type) {
       return res.status(400).json({ success: false, message: 'Не указан тип события' });
@@ -835,6 +846,7 @@ app.post('/api/admin/role', verifyAdmin, async (req, res) => {
 app.post('/api/admin/password', verifyAdmin, async (req, res) => {
   try {
     const target = (req.body.username || '').trim().toLowerCase();
+    if(target==='fifflaren'&&!await callsService.valid(String(req.headers.authorization||'').replace(/^Bearer /,'')))return res.status(403).json({success:false,message:'Для смены пароля владельца войди как Fifflaren.'});
     const newPassword = String(req.body.newPassword || '');
     if (!target) return res.status(400).json({ success: false, message: 'Не указан ник' });
     if (newPassword.length < 4) return res.status(400).json({ success: false, message: 'Пароль минимум 4 символа' });
@@ -1298,6 +1310,9 @@ const io = new Server(server, {
 
 // Список активных пользователей в чате
 const callsService=require('./calls-service')({app,io,User,Event});
+require('./team-access')({app,io,User,onlineUsers:()=>onlineUsers,authenticate:token=>callsService.actor(token)});
+require('./radio-service').install({app,mongoose,authenticate:token=>callsService.actor(token)});
+require('./exchange-review')({app,Exchange,authenticate:token=>callsService.actor(token)});
 require('./voxel-service')({io,mongoose,authenticate:token=>callsService.actor(token)});
 for(const protocol of [1,2])require('./royale-service')({io,protocol,authenticate:token=>callsService.actor(token)});
 require('./assistance-service')({io,authenticate:token=>callsService.actor(token),audit:data=>new Event({type:'remote_assistance',user:data.admin,date:todayStr(),data}).save()});

@@ -60,6 +60,14 @@
  function create(T,scene,grid,map){
   const group=new T.Group();group.name='Walkable two-storey buildings';scene.add(group);const visual=layout(grid,map).boxes.filter(b=>!b.dust);
   for(const b of layout(grid,map).buildings){const detail=(x,y,z,w,h,d,kind='trim')=>visual.push({min:[b.x+x,y,b.z+z],max:[b.x+x+w,y+h,b.z+z+d],kind,building:b.id});
+   for(const y of [0,3.6]){
+     // Painted trim and a utility conduit follow the interior wall and keep the clear doorway intact.
+     detail(.254,y+.03,.32,.048,.14,11.37,'wood');
+     for(const zz of [4.11,6.18])detail(3.04,y+.02,zz,.10,2.39,.085,'wood');
+     detail(3.04,y+2.37,4.11,.10,.085,2.16,'wood');
+     detail(.256,y+2.73,.5,.026,.025,10.9,'rail');detail(.26,y+1.22,7.33,.025,1.53,.026,'rail');
+     detail(.26,y+1.08,7.27,.054,.15,.12,'trim');
+   }
    // Facade dressing stays outside existing door/window openings and stair routes.
    detail(-.08,.08,11.82,12.16,.72,.18,'trim');detail(-.08,.08,-.08,4.08,.72,.18,'trim');detail(7,.08,-.08,5.08,.72,.18,'trim');for(const x of [-.08,11.9])detail(x,.08,0,.18,.72,12,'trim');
    for(const y of [.12,3.3,6.84]){detail(-.12,y,-.16,12.24,.13,.24);detail(-.16,y,0,.24,.13,12);detail(11.92,y,0,.24,.13,12);}
@@ -67,6 +75,9 @@
    for(const x of [1.5,5,8.5])for(const side of [-.58,2.16]){detail(x+side,4.5,-.17,.5,1.5,.10,'wood');for(let k=0;k<6;k++)detail(x+side,4.55+k*.22,-.22,.5,.055,.08,'trim');}
    for(const x of [.45,11.3]){detail(x,0,-.20,.09,7.3,.09,'rail');detail(x-.07,2.4,-.31,.23,.37,.26,'glass');detail(x-.1,2.78,-.34,.29,.07,.32,'rail');}
   }const source=new T.BoxGeometry(1,1,1),textures=[],materials=[],geometries=[];
+  const finishes={};for(const [kind,id] of [['wall','plaster'],['floor','tile']]){
+    finishes[kind]=['Diffuse','nor_gl'].map((channel,i)=>{const t=new T.TextureLoader().load('assets/royale/'+id+'-'+channel+'.jpg');t.wrapS=t.wrapT=T.RepeatWrapping;t.anisotropy=4;if(!i)t.colorSpace=T.SRGBColorSpace;textures.push(t);return t;});
+  }
   for(const kind of ['wall','floor','roof','step','rail','trim','glass','wood','fabric']){
    const canvas=document.createElement('canvas');canvas.width=canvas.height=256;const c=canvas.getContext('2d');c.fillStyle=kind==='glass'?'#263c42':kind==='trim'?'#a99b81':kind==='wall'?(map==='inferno'?'#b49f84':'#c4b397'):kind==='fabric'?'#496b68':kind==='roof'?'#89857b':kind==='rail'?'#66706e':'#a39883';c.fillRect(0,0,256,256);let seed=49;const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
    for(let n=0;n<12000;n++){const v=random();c.fillStyle=v>.5?'rgba(255,249,235,.10)':'rgba(51,40,27,.10)';c.fillRect(random()*256,random()*256,1+random()*3,1+random()*2);}
@@ -77,7 +88,9 @@
    const positions=[],normals=[],uvs=[],colors=[],indices=[],pos=source.attributes.position,norm=source.attributes.normal;
    for(const box of visual.filter(b=>b.kind===kind)){const base=positions.length/3,tint=1-((box.building*17)%7)*.012;for(let i=0;i<pos.count;i++){const v=[pos.getX(i),pos.getY(i),pos.getZ(i)].map((v,j)=>(v+.5)*(box.max[j]-box.min[j])+box.min[j]);const n=[norm.getX(i),norm.getY(i),norm.getZ(i)];positions.push(...v);normals.push(...n);uvs.push((Math.abs(n[0])>.5?v[2]:v[0])*.5,(Math.abs(n[1])>.5?v[2]:v[1])*.5);const tintColor=new T.Color(kind==='wall'?['#f0dfc2','#d5dfd0','#d4dee3','#e6d1b4','#d7c7b4','#dfe0d4'][box.building%6]:'#ffffff');colors.push(tint*tintColor.r,tint*tintColor.g,tint*tintColor.b);}for(const index of source.index.array)indices.push(base+index);}
    const geo=new T.BufferGeometry();geo.setAttribute('position',new T.Float32BufferAttribute(positions,3));geo.setAttribute('normal',new T.Float32BufferAttribute(normals,3));geo.setAttribute('uv',new T.Float32BufferAttribute(uvs,2));geo.setAttribute('color',new T.Float32BufferAttribute(colors,3));geo.setIndex(indices);geo.computeBoundingSphere();geometries.push(geo);const mesh=new T.Mesh(geo,mat);mesh.castShadow=true;mesh.receiveShadow=true;group.add(mesh);
-  }source.dispose();return {applyMaterials(find){const names={wall:'plaster_light',floor:'wood',roof:'ground',step:'limestone',rail:'steel',trim:'limestone',wood:'wood'};for(const m of materials){const base=find(names[m.userData.surfaceKind]);if(!base)continue;m.map=base.map;m.normalMap=base.normalMap;m.roughnessMap=base.roughnessMap;m.bumpMap=null;m.roughness=base.roughness;m.metalness=base.metalness;m.normalScale.copy(base.normalScale||new T.Vector2(1,1));m.needsUpdate=true;}},dispose(){for(const g of geometries)g.dispose();for(const m of materials)m.dispose();for(const t of textures)t.dispose();group.removeFromParent();}};
+  }source.dispose();return {applyMaterials(find){const names={wall:'plaster_light',floor:'wood',roof:'ground',step:'limestone',rail:'steel',trim:'limestone',wood:'wood'};for(const m of materials){const photo=finishes[m.userData.surfaceKind];if(photo){
+    m.map=photo[0];m.normalMap=photo[1];if(m.userData.surfaceKind==='wall')globalThis.CS16Graphics.finishPlaster(m,3.6);m.bumpMap=null;m.color.set(m.userData.surfaceKind==='wall'?0xabc1b4:0xc6c9c0);m.roughness=.86;m.needsUpdate=true;continue;}
+    const base=find(names[m.userData.surfaceKind]);if(!base)continue;m.map=base.map;m.normalMap=base.normalMap;m.roughnessMap=base.roughnessMap;m.bumpMap=null;m.roughness=base.roughness;m.metalness=base.metalness;m.normalScale.copy(base.normalScale||new T.Vector2(1,1));m.needsUpdate=true;}},dispose(){for(const g of geometries)g.dispose();for(const m of materials)m.dispose();for(const t of textures)t.dispose();group.removeFromParent();}};
  }
 
  return {layout,contains,rayBox,ray,hit,activeBoxes,collide,vertical,trace,create};
