@@ -4,7 +4,7 @@ const install=require('../voxel-service'),C=require('../voxel-core'),pause=ms=>n
 (async()=>{let db,web,io,models,sockets=[];try{
  db=await MongoMemoryReplSet.create({replSet:{count:1},instanceOpts:[{launchTimeout:60000}],binary:{version:'8.2.6'}});await mongoose.connect(db.getUri(),{dbName:'survival_test'});
  async function start(){web=http.createServer();io=new Server(web);models=install({io,mongoose,authenticate:async token=>({username:token})});await Promise.all(Object.values(models).map(m=>m.init()));await new Promise(r=>web.listen(0,'127.0.0.1',r));}
- const connect=token=>new Promise((resolve,reject)=>{const s=client('http://127.0.0.1:'+web.address().port+'/voxel',{auth:{token,protocol:2},reconnection:false});sockets.push(s);s.once('connect',()=>resolve(s));s.once('connect_error',reject);});
+ const connect=token=>new Promise((resolve,reject)=>{const s=client('http://127.0.0.1:'+web.address().port+'/voxel',{auth:{token,protocol:3},reconnection:false});sockets.push(s);s.once('connect',()=>resolve(s));s.once('connect_error',reject);});
  const rpc=(s,n,d={})=>new Promise((resolve,reject)=>s.timeout(5000).emit(n,d,(e,r)=>e?reject(e):resolve(r)));
  await start();const h=C.height(0,0,758321),at=[2,h+2,2],furnaceAt=[1,h+2,1];
  await models.Player.create({_id:'alpha',pos:[.5,h+2,.5],health:10,hunger:10,inventory:{6:16,4:1,3:1,15:1,104:1,106:1,118:1},wear:{104:1}});
