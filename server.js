@@ -324,7 +324,8 @@ app.post('/api/login', async (req, res) => {
       isMuted: user.isMuted
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    const full=/over your space quota|storage quota|space limit/i.test(err.message||'');
+    res.status(full?503:500).json({success:false,message:full?'Рабочая база заполнена. Сообщи Fifflaren и повтори вход после освобождения места.':'Не удалось выполнить вход. Повтори попытку.'});
   }
 });
 
@@ -5477,5 +5478,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '4.0.7', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '4.0.8', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });

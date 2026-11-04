@@ -17,23 +17,40 @@ function install({io,app,mongoose,authenticate}){
     const user=await authenticate(String(req.headers.authorization||'').replace(/^Bearer /,''));
     if(!user)throw fail(401,'Войди в Support Hub заново.');
     if(owner&&user.username.toLowerCase()!=='fifflaren')throw fail(403,'Эфиром управляет Fifflaren.');
-    next();
+    req.cinemaOwner=user.username.toLowerCase()==='fifflaren';next();
   }catch(e){error(res,e);}};
-  media.create({mongoose,app,kind:'cinema',guard,error});
+  const origin=require('./cinema-origin').create({io,mongoose,authenticate});
+  media.create({mongoose,app,kind:'cinema',guard,error,origin,mayWatch:async(req,id)=>req.cinemaOwner||(await read()).film?.id===id});
+  async function selectFilm(id){
+    if(typeof id!=='string'||!/^[a-f0-9]{24}$/.test(id))throw fail(400,'Выбери фильм из библиотеки.');
+    const local=await origin.find(id);if(local)return local;
+    const row=await films.findOne({_id:id,ready:true});if(!row)throw fail(404,'Фильм не найден.');
+    return {id:row._id,title:row.title,duration:row.duration};
+  }
+  app.delete('/api/cinema/library/:id',guard(true),async(req,res)=>{try{
+    await origin.run(async()=>{
+      const id=req.params.id;if(!/^[0-9a-f]{24}$/.test(id))throw fail(400,'Неверный фильм.');
+      if((await read()).film?.id===id)throw fail(409,'Сначала сними фильм с афиши, затем удали его из библиотеки.');
+      if(await origin.find(id)){await origin.remove(id);return;}
+      const old=await films.findOne({_id:id});if(!old)return;
+      if(!/^[a-f0-9]{32}$/.test(old.series))throw fail(409,'Не удалось определить части фильма.');
+      await db.collection('cinema_parts').deleteMany({_id:{$gte:old.series+':',$lt:old.series+';'}});
+      await films.deleteOne({_id:id,series:old.series});
+    });res.json({success:true});
+  }catch(e){error(res,e);}});
   app.get('/api/cinema/state',guard(false),async(req,res)=>{try{res.set('Cache-Control','no-store').json(view(await read()));}catch(e){error(res,e);}});
-  app.post('/api/cinema/control',guard(true),async(req,res)=>{try{
+  app.post('/api/cinema/control',guard(true),async(req,res)=>{try{await origin.run(async()=>{
     const old=await read(),now=Date.now(),live=view(old,now),cmd=req.body||{};
     if(old.rev!==cmd.rev)throw fail(409,'Афиша изменилась. Обнови показ и попробуй ещё раз.');
     let {title,film,position,playing}=live,startsAt=0;
     if(cmd.op==='schedule'){
-      if(cmd.film){const row=await films.findOne({_id:cmd.film,ready:true});if(!row)throw fail(404,'Фильм ещё не загружен.');film={id:row._id,title:row.title,duration:row.duration};}else film=null;
+      film=cmd.film?await selectFilm(cmd.film):null;
       title=String(cmd.title||film?.title||'').trim();if(!title||title.length>160)throw fail(400,'Укажи название до 160 символов.');
       if(!Number.isInteger(cmd.minutes)||cmd.minutes<0||cmd.minutes>43200)throw fail(400,'Укажи задержку от 0 до 43200 минут.');
       startsAt=now+cmd.minutes*60000;position=0;playing=false;
     }else if(cmd.op==='attach'){
       if(!old.title||old.film)throw fail(409,'Выбери анонс без видео.');
-      const row=await films.findOne({_id:cmd.film,ready:true});if(!row)throw fail(404,'Фильм не найден.');
-      film={id:row._id,title:row.title,duration:row.duration};startsAt=Math.max(old.startsAt,now);position=0;playing=false;
+      film=await selectFilm(cmd.film);startsAt=Math.max(old.startsAt,now);position=0;playing=false;
     }else if(cmd.op==='clear'){title='';film=null;position=0;playing=false;}
     else{
       if(!film)throw fail(409,'Сначала выбери фильм.');
@@ -50,7 +67,7 @@ function install({io,app,mongoose,authenticate}){
     const state=view(update);ns.emit('show',state);
     if(cmd.op==='schedule')posters.emit('poster',{...update.poster,phase:state.phase});
     res.json(state);
-  }catch(e){error(res,e);}});
+  });}catch(e){error(res,e);}});
   const authorize=async(socket,next)=>{try{const u=await authenticate(socket.handshake.auth?.token);if(!u)return next(Error('Войди в Support Hub заново.'));socket.data.nick=u.username;next();}catch{next(Error('Не удалось войти в кинозал.'));}};
   ns.use(authorize);posters.use(authorize);
   posters.on('connection',async socket=>{

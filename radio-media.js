@@ -27,7 +27,7 @@ function range(value,size){
 const binary=v=>Buffer.isBuffer(v)?v:Buffer.from(v.value(true));
 const partKey=(id,n)=>id+':'+String(n).padStart(12,'0');
 const publicTrack=t=>({id:t._id,title:t.title,duration:t.duration});
-function create({mongoose,app,guard,get,enqueue,send,error,kind='radio'}){
+function create({mongoose,app,guard,get,enqueue,send,error,kind='radio',origin,mayWatch}){
   const film=kind==='cinema',prefix='/api/'+kind,streamPath=prefix+(film?'/video':'/audio');
   function detect(data){
     if(!film)return mediaType(data);
@@ -75,6 +75,10 @@ function create({mongoose,app,guard,get,enqueue,send,error,kind='radio'}){
   app.get(prefix+'/library',guard(true),async(req,res)=>{try{
     if(!film)await migrate();const before=req.query.before;if(before&&!validId(before))throw fail(400,'Некорректная страница.');
     const rows=await tracks.find({ready:true,...(before?{_id:{$lt:before}}:{})}).sort({_id:-1}).limit(51).toArray();
+    if(film&&origin){
+      const host=await origin.catalog(),all=rows.map(t=>({...publicTrack(t),size:t.size,storage:'legacy'})).concat(host.movies.filter(m=>!before||m.id<before)).sort((a,b)=>b.id.localeCompare(a.id));
+      const list=all.slice(0,50);return res.json({success:true,tracks:list,before:all.length>50?list.at(-1).id:null,space:host.space});
+    }
     const list=rows.slice(0,50);res.json({success:true,tracks:list.map(publicTrack),before:rows.length>50?list.at(-1)._id:null});
   }catch(e){error(res,e);}});
   if(!film)app.post(prefix+'/library/:id/queue',guard(true),async(req,res)=>{try{
@@ -113,13 +117,16 @@ function create({mongoose,app,guard,get,enqueue,send,error,kind='radio'}){
   }catch(e){error(res,e);}});
   app.post(streamPath+'/:id/ticket',guard(false),async(req,res)=>{try{
     const id=req.params.id;if(!validId(id))throw fail(404,'Трек не найден.');
+    if(mayWatch&&!await mayWatch(req,id))throw fail(403,'Этот фильм ещё не объявлен для просмотра.');
+    if(film&&origin&&await origin.find(id))origin.online();
     const expires=Date.now()+(film?24:4)*3600*1000,mac=await sign(id,expires);
     res.set('Cache-Control','no-store').json({success:true,ticket:expires+'.'+mac});
   }catch(e){error(res,e);}});
   // The audio element can seek using native HTTP ranges. A ticket authorizes this track alone.
-  const authorize=async(req,res,next)=>{try{if(await ticketOK(req.params.id,req.query.ticket))return next();return guard(false)(req,res,next);}catch(e){error(res,e);}};
+  const authorize=async(req,res,next)=>{try{if(await ticketOK(req.params.id,req.query.ticket))return next();return guard(false)(req,res,async()=>{try{if(mayWatch&&!await mayWatch(req,req.params.id))throw fail(403,'Этот фильм ещё не объявлен для просмотра.');next();}catch(e){error(res,e);}});}catch(e){error(res,e);}};
   app.get(streamPath+'/:id',authorize,async(req,res)=>{try{
     const id=req.params.id;if(!validId(id))return res.sendStatus(404);
+    if(film&&origin){const item=await origin.find(id);if(item)return await origin.stream(req,res,item,range);}
     const t=await tracks.findOne({_id:id,ready:true});
     const legacy=!film&&(!t||t.legacy)?await old.findOne({_id:id}):null;
     if(!legacy&&(!t||t.legacy))return res.sendStatus(404);
