@@ -59,7 +59,9 @@ function install({io,app,mongoose,authenticate}){
       if(socket.connected&&show.poster&&['countdown','playing'].includes(phase))socket.emit('poster',{...show.poster,phase});
     }catch{/* Live announcements remain subscribed during a database outage. */}
   });
+  const bindVoice=require('./cinema-voice')(ns);
   ns.on('connection',socket=>{
+    bindVoice(socket);
     let last=0;
     Promise.all([read(),chat.findOne({_id:'room'})]).then(([show,log])=>{socket.emit('show',view(show));socket.emit('history',log?.messages||[]);}).catch(()=>socket.emit('room_error','Не удалось загрузить кинозал.'));
     socket.on('say',async(text,ack)=>{

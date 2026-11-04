@@ -10,11 +10,17 @@ async function main(){
     db=await MongoMemoryServer.create({instance:{launchTimeout:60000},binary:{version:'8.2.6'}});await mongoose.connect(db.getUri());
     const app=express(),server=http.createServer(app);app.use(express.json());io=new Server(server);
     const cfg={app,io,mongoose,authenticate:async t=>['fifflaren','mira','leo'].includes(t)?{username:t}:null};install(cfg);radio.install(cfg);
-    app.get('/',(req,res)=>res.send('<meta charset="utf-8"><link rel="stylesheet" href="/radio.css"><link rel="stylesheet" href="/cinema.css"><header style="display:flex"><div class="hub-tools"></div></header><button id="radioTabButton"></button><div id="tab-radio"'+tab+'<script src="/socket.io/socket.io.js"></script><script src="/cinema.js"></script><script src="/radio.js"></script><script>const nick=location.hash.slice(1);window.posters=[];HubRadio.start({username:nick,token:nick,io,server:location.origin,notify:p=>posters.push(p)});</script>'));
-    for(const f of ['radio.js','cinema.js','radio.css','cinema.css'])app.get('/'+f,(req,res)=>res.sendFile(path.join(root,f)));
+    app.get('/',(req,res)=>res.send('<meta charset="utf-8"><link rel="stylesheet" href="/radio.css"><link rel="stylesheet" href="/cinema.css"><header style="display:flex"><div class="hub-tools"></div></header><button id="radioTabButton"></button><div id="tab-radio"'+tab+'<script src="/socket.io/socket.io.js"></script><script src="/cinema-voice.js"></script><script src="/cinema.js"></script><script src="/radio.js"></script><script>const nick=location.hash.slice(1);window.posters=[];HubRadio.start({username:nick,token:nick,io,server:location.origin,notify:p=>posters.push(p)});</script>'));
+    for(const f of ['radio.js','cinema-voice.js','cinema.js','radio.css','cinema.css'])app.get('/'+f,(req,res)=>res.sendFile(path.join(root,f)));
     await new Promise(r=>server.listen(0,'127.0.0.1',r));const url='http://127.0.0.1:'+server.address().port;
-    browser=await chromium.launch({executablePath:process.env.CHROME_BIN||'C:/Program Files/Google/Chrome/Application/chrome.exe'});const errors=[];
-    async function login(nick){const p=await browser.newPage({viewport:{width:1150,height:790}});p.on('pageerror',e=>errors.push(e.message));await p.goto(url+'/#'+nick);return p;}
+    browser=await chromium.launch({executablePath:process.env.CHROME_BIN||'C:/Program Files/Google/Chrome/Application/chrome.exe',args:['--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream',...(process.env.CINEMA_QA_MIC?['--use-file-for-fake-audio-capture='+process.env.CINEMA_QA_MIC]:[])]});const errors=[];
+    async function login(nick){const p=await browser.newPage({viewport:{width:1150,height:790}});p.on('pageerror',e=>errors.push(e.message));
+      await p.addInitScript(()=>{
+        window.testMic=[];window.heardVoice=0;
+        const get=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);navigator.mediaDevices.getUserMedia=async c=>{const stream=await get(c);testMic.push(...stream.getAudioTracks());return stream;};
+        const start=AudioBufferSourceNode.prototype.start;AudioBufferSourceNode.prototype.start=function(...args){if(this.buffer?.length===640&&this.buffer.getChannelData(0).some(v=>Math.abs(v)>.003))heardVoice++;return start.apply(this,args);};
+      });
+      await p.goto(url+'/#'+nick);return p;}
     async function join(nick){const p=await login(nick);await p.click('#cinemaButton');await p.waitForFunction(()=>document.getElementById('cinPhase').textContent!=='Подключаемся…');return p;}
     const host=await join('fifflaren'),viewer=await join('mira'),outside=await login('leo');assert(await viewer.locator('#cinHost').isHidden());
     assert.equal((await fetch(url+'/api/cinema/control',{method:'POST',headers:{Authorization:'Bearer mira','Content-Type':'application/json'},body:'{"op":"clear","rev":0}'})).status,403);
@@ -23,6 +29,18 @@ async function main(){
     await viewer.waitForFunction(()=>document.getElementById('cinPhase').textContent==='До начала показа'&&document.getElementById('cinTitle').textContent==='Ночной сеанс');
     for(const p of [host,viewer,outside])await p.waitForFunction(()=>posters.length===1&&posters[0].kind==='cinema'&&posters[0].title==='Афиша · Ночной сеанс'&&posters[0].text.includes('Начало'));
     assert.equal(await outside.locator('#hubCinema[open]').count(),0);
+    for(const p of [host,viewer]){
+      assert.equal(await p.evaluate(()=>testMic.length),0);
+      assert(await p.evaluate(()=>{const box=document.querySelector('#hubCinema').getBoundingClientRect(),chat=document.querySelector('#hubCinema aside').getBoundingClientRect();return Math.abs(box.width-innerWidth)<3&&Math.abs(box.height-innerHeight)<3&&innerHeight-chat.bottom<35&&innerWidth-chat.right<35;}),'fullscreen with chat docked bottom-right');
+    }
+    await host.click('#cinVoiceJoin');await viewer.click('#cinVoiceJoin');
+    for(const p of [host,viewer])await p.waitForFunction(()=>document.querySelector('#cinVoicePeople').textContent.includes('fifflaren')&&document.querySelector('#cinVoicePeople').textContent.includes('mira')&&heardVoice>0,null,{timeout:22000});
+    await host.click('#cinVoiceMute');await viewer.waitForFunction(()=>document.querySelector('#cinVoicePeople').textContent.includes('fifflaren (микрофон выкл.)'));
+    assert.equal(await host.evaluate(()=>testMic.at(-1).enabled),false);
+    await viewer.waitForTimeout(500);const quiet=await viewer.evaluate(()=>heardVoice);await viewer.waitForTimeout(350);assert.equal(await viewer.evaluate(()=>heardVoice),quiet);
+    await host.click('#cinVoiceMute');await viewer.waitForFunction(n=>heardVoice>n,quiet);
+    await host.click('#cinVoiceLeave');await viewer.waitForFunction(()=>!document.querySelector('#cinVoicePeople').textContent.includes('fifflaren'));
+    assert.equal(await host.evaluate(()=>testMic.at(-1).readyState),'ended');
     await outside.evaluate(()=>HubCinema.openNotice('mira'));assert.equal(await outside.locator('#hubCinema[open]').count(),0);
     await outside.evaluate(()=>HubCinema.openNotice(posters[0].username));await outside.locator('#hubCinema[open]').waitFor();
     await outside.reload();
@@ -54,8 +72,9 @@ async function main(){
     await host.fill('#cinName','Второй сеанс');await host.click('#cinSchedule');
     await outside.waitForFunction(()=>posters.length===1&&posters[0].title==='Афиша · Второй сеанс');
     await host.click('#cinClear');await viewer.waitForFunction(()=>document.querySelector('#cinTitle').textContent==='Скоро на экране');
+    await viewer.click('#cinExit');await viewer.waitForFunction(()=>testMic.at(-1).readyState==='ended');await host.waitForFunction(()=>document.querySelector('#cinVoicePeople').textContent.includes('никого'));
     const afterClear=await join('leo');assert.equal(await afterClear.evaluate(()=>posters.length),0,'cancelled show is not announced on login');
-    assert.deepEqual(errors,[]);console.log('PASS posters outside the hall, reconnect, notification navigation, marquee countdown, automatic start, audible movie, multipart upload, host controls, seek, late join, chat history and exit',times);
+    assert.deepEqual(errors,[]);console.log('PASS fullscreen, bottom-right chat, bidirectional voice, mute, microphone teardown, posters outside the hall, reconnect, notification navigation, marquee countdown, automatic start, audible movie, multipart upload, host controls, seek, late join, chat history and exit',times);
   }finally{await browser?.close();if(io)await new Promise(r=>io.close(r));await mongoose.disconnect();await db?.stop();}
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
