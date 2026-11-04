@@ -25,7 +25,7 @@
   }
   const leafTexture=foliageTexture(false),grassTexture=foliageTexture(true);
   const resources={wood:[new T.CylinderGeometry(.12,.18,1,12),0x66543b],leaf:[cards(),0x899d67],bush:[cards(),0x91a46c],grass:[cards(),0x95a76d],plank:[new T.BoxGeometry(1,1,1),0x85714d],bag:[new T.SphereGeometry(1,8,5),0x9d9473],barrel:[new T.CylinderGeometry(.38,.38,.9,12),0x58665c],pipe:[new T.CylinderGeometry(.24,.24,1.6,12,1,true).rotateX(Math.PI/2),0x889392],crate:[new T.BoxGeometry(1,1,1),0xa69271]};
-  function part(item,type,x,y,z,sx,sy,sz,rotation=0){if(!batches.has(type))batches.set(type,[]);dummy.position.set(item.x+x,y,item.z+z);dummy.scale.set(sx,sy,sz);dummy.rotation.set(0,rotation,0);dummy.updateMatrix();batches.get(type).push({id:item.id,matrix:dummy.matrix.clone()});}
+  function part(item,type,x,y,z,sx,sy,sz,rotation=0){if(!batches.has(type))batches.set(type,[]);dummy.position.set(item.x+x,y+window.CS16Terrain.height(grid,item.x,item.z),item.z+z);dummy.scale.set(sx,sy,sz);dummy.rotation.set(0,rotation,0);dummy.updateMatrix();batches.get(type).push({id:item.id,matrix:dummy.matrix.clone()});}
   for(const item of items){const s=item.scale,key=Math.floor(item.x/4)+','+Math.floor(item.z/4);bins.set(key,item.id);
    if(item.kind==='tree'){part(item,'wood',0,2*s,0,1,4*s,1);if(dry&&item.zone!=='forest'){for(let n=0;n<6;n++){const a=n*Math.PI/3;part(item,'leaf',Math.cos(a)*1.1*s,4*s,Math.sin(a)*1.1*s,1.7*s,.3*s,.6*s,-a);}}else{for(let n=0;n<7;n++){const a=n*2.399+item.yaw,r=n===6?0:.8*s;part(item,'leaf',Math.cos(a)*r,(3.6+(n%3)*.65)*s,Math.sin(a)*r,(1.05+(n%2)*.3)*s,1.15*s,1.15*s,a);}}}
    else if(item.kind==='shrub'){for(let n=0;n<3;n++)part(item,'bush',Math.cos(n*2.1)*.4,.4*s,Math.sin(n*2.1)*.4,.7*s,.65*s,.65*s);}
@@ -56,7 +56,7 @@
   function update(dt,camera){detailTime+=dt*1000;detailed?.update(camera,detailTime,detailQuality);breeze.value+=Math.min(dt,.05);for(let i=debris.length-1;i>=0;i--){const d=debris[i];d.t+=dt;d.vy-=9*dt;d.mesh.position.x+=d.vx*dt;d.mesh.position.y+=d.vy*dt;d.mesh.position.z+=d.vz*dt;d.mesh.rotation.x+=dt*4;if(d.t>1.4){d.mesh.removeFromParent();d.mesh.geometry.dispose();d.mesh.material.dispose();debris.splice(i,1);}}}
   function reset(){broken.clear();detailed?.invalidate();for(const ss of slots.values())for(const s of ss){s.mesh.setMatrixAt(s.index,s.matrix);s.mesh.instanceMatrix.needsUpdate=true;}}
   function dispose(){detailed?.dispose();detailed=null;group.traverse(o=>{o.geometry?.dispose();o.material?.dispose();o.customDepthMaterial?.dispose();});leafTexture.dispose();grassTexture.dispose();woodTexture.dispose();metalTexture.dispose();group.removeFromParent();debris.length=0;}
-  return {items,destroy,near,update,reset,dispose,broken,applyNature(nature,quality){detailed?.dispose();detailQuality=quality||'balanced';detailed=window.CS16Landscape.vegetation({T,group,nature,items,slots,broken});},setQuality(q){detailQuality=q;detailed?.invalidate();}};
+  return {items,destroy,near,update,reset,dispose,broken,applyNature(nature,quality){detailed?.dispose();detailQuality=quality||'balanced';detailed=window.CS16Landscape.vegetation({T,group,nature,items,slots,broken,grid});},setQuality(q){detailQuality=q;detailed?.invalidate();}};
  }
  return {generate,create,safeSpawn};
 });

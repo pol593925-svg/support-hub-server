@@ -1,7 +1,7 @@
 'use strict';
 const M=require('./cs16-magic'),Characters=require('./cs16-characters'),B=require('./cs16-buildings');
 function create({state,grid,emit,personal,damage,combat}){
- const at=p=>p.bot?[p.bx,0,p.bz]:[p.lx,p.ly,p.lz],valid=v=>Array.isArray(v)&&v.length===3&&v.every(Number.isFinite),enemy=(p,q)=>q!==p&&q.alive&&q.team&&(state.gm==='gg'||q.team!==p.team);
+ const at=p=>p.bot?[p.bx,p.ly||0,p.bz]:[p.lx,p.ly,p.lz],valid=v=>Array.isArray(v)&&v.length===3&&v.every(Number.isFinite),enemy=(p,q)=>q!==p&&q.alive&&q.team&&(state.gm==='gg'||q.team!==p.team);
  function visible(from,to){const delta=to.map((v,i)=>v-from[i]),dist=Math.hypot(...delta);return dist<.1||B.trace(grid(),state.map,from,delta.map(v=>v/dist),dist)>=dist-.35;}
  function snapshot(p,now=Date.now()){return {heroReady:p.heroReady||0,petReady:p.petReady||0,shield:(p.shieldUntil||0)>now?p.magicShield||0:0,shieldUntil:p.shieldUntil||0,slowUntil:p.slowUntil||0,speedUntil:p.speedUntil||0,now};}
  function sync(p,extra={}){personal(p,{...snapshot(p),...extra});}

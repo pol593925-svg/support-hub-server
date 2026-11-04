@@ -4214,6 +4214,7 @@ const CS16Combat = require('./cs16-combat');
 const CS16Vehicles = require('./cs16-vehicles');
 const CS16Classes=require('./cs16-classes');
 const CS16Buildings=require('./cs16-buildings');
+const CS16Terrain=require('./cs16-terrain');
 const CS16RPG=require('./cs16-rpg');
 const CS16Props=require('./cs16-props');
 const cs16BrokenProps=new Set();
@@ -4589,6 +4590,7 @@ function cs16Later(fn, ms) { cs16.timers.push(setTimeout(fn, ms)); }
 
 const CS16Characters=require('./cs16-characters');
 const CS16Magic=require('./cs16-magic');
+const fieldEnvironment=require('./cs16-environment-server').create({state:cs16,grid:()=>CS16_GRID[cs16.map]||CS16_GRID.dust2,emit:(n,d)=>io.emit(n,d)});
 const cs16Magic=require('./cs16-magic-server').create({state:cs16,grid:()=>CS16_GRID[cs16.map],emit:(n,d)=>io.emit(n,d),combat:CS16Combat,personal:(p,d)=>{const sid=[...cs16.players].find(([,q])=>q===p)?.[0];if(sid&&!p.bot)io.to(sid).emit('cs16_magic_state',d);},damage:(p,q,n)=>cs16ApplyHit(p,q,'magic',false,'body',0,false,n)});
 function cs16State() {
   return {
@@ -4608,7 +4610,7 @@ function cs16State() {
 function cs16Broadcast() { io.emit('cs16_state', cs16State()); }
 function cs16Personal(sid) { const p = cs16.players.get(sid); if (p) io.to(sid).emit('cs16_you', { money: p.money, hp: p.hp, armor: p.armor, weapon: p.weapon, team: p.team, alive: p.alive, kit: p.kit, respawnAt:p.cqRespawnAt||0,spawnFlag:p.cqSpawn??null }); }
 
-function cs16Spawn(team,index,total){index=Math.max(0,Number.isFinite(index)?Math.floor(index):0)%10;const pos=team==='ct'?[(57+index%3)*4,0,(9+Math.floor(index/3))*4]:[(cs16.map==='inferno'?51:48)*4+(index%5)*4,0,((cs16.map==='inferno'?105:108)+Math.floor(index/5))*4];const safe=require('./cs16-props').safeSpawn(CS16_GRID[cs16.map]||CS16_GRID.dust2,pos);return [safe[0],1.6,safe[2]];}
+function cs16Spawn(team,index,total){index=Math.max(0,Number.isFinite(index)?Math.floor(index):0)%10;const pos=team==='ct'?[(57+index%3)*4,0,(9+Math.floor(index/3))*4]:[(cs16.map==='inferno'?51:48)*4+(index%5)*4,0,((cs16.map==='inferno'?105:108)+Math.floor(index/5))*4];const safe=require('./cs16-props').safeSpawn(CS16_GRID[cs16.map]||CS16_GRID.dust2,pos);return [safe[0],1.6+CS16Terrain.walkHeight(CS16_GRID[cs16.map],safe[0],safe[2]),safe[2]];}
 
 // 3.24.0: единый подсчёт урона и убийств (игроки и боты)
 function cs16ApplyHit(attacker, target, weapon, head, zone, dist, heavy, rawDamage) {
@@ -4755,7 +4757,8 @@ function cs16BotDel() {
 // LOS по сетке карты (2D, без уровней — достаточно для ботов)
 function cs16Los2D(x1, z1, x2, z2) {
   const grid = CS16_GRID[cs16.map] || CS16_GRID.dust2;
-  const distance=Math.hypot(x2-x1,z2-z1);if(distance>.01&&CS16Buildings.ray(grid,cs16.map,[x1,1.5,z1],[(x2-x1)/distance,0,(z2-z1)/distance],distance)!==null)return false;
+  const distance=Math.hypot(x2-x1,z2-z1),y1=CS16Terrain.walkHeight(grid,x1,z1),y2=CS16Terrain.walkHeight(grid,x2,z2),length=Math.hypot(distance,y2-y1);
+  if(length>.01&&CS16Buildings.ray(grid,cs16.map,[x1,y1+1.5,z1],[(x2-x1)/length,(y2-y1)/length,(z2-z1)/length],length)!==null)return false;
   const steps = Math.ceil(distance / 1.5);
   for (let i = 1; i < steps; i++) {
     const t = i / steps;
@@ -4790,7 +4793,7 @@ setInterval(() => { // тик ботов ~7 раз/сек
         p.blastShot = now;
         const dx = gx - p.bx, dz = gz - p.bz;
         const dl = Math.hypot(dx, dz) || 1;
-        io.emit('cs16_shoot', { nick: p.nick, origin: [p.bx, 1.5, p.bz], dir: [dx / dl, 0, dz / dl], weapon: p.weapon || 'ak47' });
+        io.emit('cs16_shoot', { nick: p.nick, origin: [p.bx, (p.ly||0)+1.5, p.bz], dir: [dx / dl, 0, dz / dl], weapon: p.weapon || 'ak47' });
         const head = Math.random() < 0.09;
         cs16ApplyHit(p, tgt, p.weapon || 'ak47', head, head ? 'head' : 'body', td);
       }
@@ -4810,7 +4813,7 @@ setInterval(() => { // тик ботов ~7 раз/сек
       if (dl < 1.5) { p.bwp = (p.bwp + 1 + Math.floor(Math.random() * 2)) % wps.length; }
       else { p.byaw = Math.atan2(dx, dz); moving = cs16BotStep(p, dx / dl, dz / dl, grid); }
     }
-    io.emit('cs16_pos', { nick: p.nick, team: p.team, pos: [+p.bx.toFixed(2), 0, +p.bz.toFixed(2)], yaw: +(p.byaw || 0).toFixed(3), pitch: 0, weapon: p.weapon || 'glock', move: moving, skin: '',characterId:CS16Characters.normalize(p.characterId) });
+    io.emit('cs16_pos', { nick: p.nick, team: p.team, pos: [+p.bx.toFixed(2), +(p.ly||0).toFixed(2), +p.bz.toFixed(2)], yaw: +(p.byaw || 0).toFixed(3), pitch: 0, weapon: p.weapon || 'glock', move: moving, skin: '',characterId:CS16Characters.normalize(p.characterId) });
   }
 }, 150);
 function cs16BotStep(p, ux, uz, grid) {
@@ -4819,12 +4822,13 @@ function cs16BotStep(p, ux, uz, grid) {
   const cx = Math.floor(nx / 4), cy = Math.floor(nz / 4);
   if (cy < 0 || cx < 0 || cy >= grid.length || cx >= grid[0].length) return false;
   if (grid[cy][cx] === 1) { p.bwp = (p.bwp + 1) % ((CS16_WPS[cs16.map] || CS16_WPS.dust2).length); return false; }
-  const fixed=CS16Buildings.collide(grid,cs16.map,nx,nz,0);if(Math.hypot(fixed[0]-nx,fixed[1]-nz)>.05)return false;
-  p.bx = nx; p.bz = nz;
+  const fixed=CS16Buildings.collide(grid,cs16.map,nx,nz,CS16Terrain.walkHeight(grid,nx,nz));if(Math.hypot(fixed[0]-nx,fixed[1]-nz)>.05)return false;
+  p.bx=p.lx=nx;p.bz=p.lz=nz;p.ly=CS16Terrain.walkHeight(grid,nx,nz);
   return true;
 }
 
 function cs16StartRound() {
+  fieldEnvironment.reset();
   cs16BrokenProps.clear();
   cs16ClearTimers();
   cs16.round += 1;
@@ -4849,7 +4853,7 @@ function cs16StartRound() {
       const idx = p.team === 't' ? ti++ : ci++;
       const pos = cs16Spawn(p.team || 't', idx, 0);
       if (p.bot) { p.bx = pos[0]; p.bz = pos[2]; }
-      p.lx=pos[0];p.ly=0;p.lz=pos[2];return { id,nick:p.nick, pos,weapon:p.weapon,armor:p.armor,classId:p.classId };
+      p.lx=pos[0];p.ly=pos[1]-1.6;p.lz=pos[2];return { id,nick:p.nick, pos,weapon:p.weapon,armor:p.armor,classId:p.classId };
     }),
   });
   cs16Later(() => { cs16.phase = 'live'; cs16Broadcast(); io.emit('cs16_live'); }, 6000);
@@ -4954,9 +4958,11 @@ io.on('connection', (socket) => {
     cs16.players.set(socket.id, { nick, team: null, money: 800, hp: 100, armor: 0, alive: cs16.phase==='lobby', kills: 0, deaths: 0, weapon: null, kit: false, lossStreak: 0, joinedAt: Date.now() });
     cs16Personal(socket.id);
     cs16Broadcast();
+    socket.emit('cs16_environment',fieldEnvironment.snapshot());
     socket.emit('cs16_props',{map:cs16.map,ids:[...cs16BrokenProps],snapshot:true});
   });
 
+  fieldEnvironment.attach(socket);
   socket.on('cs16_character',id=>{const p=cs16.players.get(socket.id);if(!p||!CS16Characters.valid(id))return;if(cs16.phase!=='lobby'&&p.team&&p.alive){socket.emit('cs16_err','Сменить внешность можно в лобби или после гибели');return;}const now=Date.now();if(p.characterChangedAt&&now-p.characterChangedAt<250)return;p.characterChangedAt=now;p.characterId=id;socket.emit('cs16_character_selected',{id});cs16Broadcast();});
   socket.on('cs16_class',id=>{const p=cs16.players.get(socket.id);if(!p||!CS16Classes.valid(id))return;p.nextClass=id;socket.emit('cs16_class_selected',{id});cs16Broadcast();});
   socket.on('cs16_pet',id=>{const p=cs16.players.get(socket.id);if(!p||!CS16Magic.petValid(id))return;if(cs16.phase!=='lobby'&&p.team&&p.alive){socket.emit('cs16_err','Питомец выбирается в лобби или после гибели');return;}if(Date.now()-(p.petChangedAt||0)<250)return;p.petChangedAt=Date.now();p.petId=id;socket.emit('cs16_pet_selected',{id});cs16Broadcast();});
@@ -5049,6 +5055,7 @@ io.on('connection', (socket) => {
     if (!p || !p.alive || cs16.phase !== 'live' || !d) return;
     if(['mgveh','tankgun'].includes(d.weapon)&&!CS16Vehicles.active(cs16.players,p))return;
     if (!CS16Combat.weapons[d.weapon] || !Array.isArray(d.origin) || !Array.isArray(d.dir) || d.origin.length!==3 || d.dir.length!==3 || ![...d.origin,...d.dir].every(Number.isFinite)) return;
+    fieldEnvironment.shoot(p,d);
     socket.broadcast.emit('cs16_shoot', { nick: p.nick, origin: d.origin, dir: d.dir, weapon: d.weapon, distance:Number.isFinite(d.distance)?Math.max(0,Math.min(200,d.distance)):60 });
   });
 
@@ -5059,7 +5066,7 @@ io.on('connection', (socket) => {
     if (!target || !target.alive) return;
     if (cs16.gm !== 'gg' && target.team === p.team) return; // фф выключен (в GG — все против всех)
     if(['mgveh','tankgun'].includes(d.weapon)&&!CS16Vehicles.active(cs16.players,p))return;
-    const origin=[p.lx,p.ly+1.5,p.lz],end=[target.bot?target.bx:target.lx,(target.bot?0:target.ly)+1,target.bot?target.bz:target.lz];if([...origin,...end].every(Number.isFinite)){const dist=Math.hypot(...end.map((v,i)=>v-origin[i]));if(dist>.01&&CS16Buildings.ray(CS16_GRID[cs16.map],cs16.map,origin,end.map((v,i)=>(v-origin[i])/dist),Math.max(0,dist-.4))!==null)return;}
+    const origin=[p.lx,p.ly+1.5,p.lz],end=[target.bot?target.bx:target.lx,(target.ly||0)+1,target.bot?target.bz:target.lz];if([...origin,...end].every(Number.isFinite)){const dist=Math.hypot(...end.map((v,i)=>v-origin[i]));if(dist>.01&&CS16Buildings.ray(CS16_GRID[cs16.map],cs16.map,origin,end.map((v,i)=>(v-origin[i])/dist),Math.max(0,dist-.4))!==null)return;}
     const weapon = CS16Combat.weapons[d.weapon], distance = Number(d.dist);
     if (!weapon || !Number.isFinite(distance) || distance<0 || distance>200 || (d.weapon==='knife'&&distance>2.85)) return;
     const interval = d.weapon==='knife'?(d.heavy?900:750):(d.weapon==='glock'||d.weapon==='famas'?75:60000/weapon.rpm);

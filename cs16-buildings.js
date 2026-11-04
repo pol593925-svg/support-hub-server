@@ -1,25 +1,61 @@
 (function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;if(root)root.CS16Buildings=api;})(typeof window!=='undefined'?window:null,function(){'use strict';
+ const Terrain=typeof window!=='undefined'?window.CS16Terrain:require('./cs16-terrain'),Env=typeof window!=='undefined'?window.CS16Environment:require('./cs16-environment');
  const cache=new WeakMap();
- function layout(grid,map){if(cache.has(grid))return cache.get(grid);const buildings=[];for(let z=26;z<grid.length-18;z+=15)for(let x=9;x<grid[0].length-15;x+=13){if(buildings.length>=6)break;let open=true;for(let dz=-1;dz<=4;dz++)for(let dx=-1;dx<=4;dx++)if(grid[z+dz]?.[x+dx]!==0)open=false;if(!open)continue;buildings.push({x:x*4,z:z*4,id:buildings.length});}const boxes=[];for(const b of buildings){const add=(x,y,z,w,h,d,kind='wall')=>boxes.push({min:[b.x+x,y,b.z+z],max:[b.x+x+w,y+h,b.z+z+d],kind,building:b.id});
-  add(0,-.2,0,12,.2,12,'floor');add(0,3.35,0,9,.25,12,'floor');add(9,3.35,10,3,.25,2,'floor');add(0,6.95,0,10.5,.25,12,'roof');add(10.5,6.95,10,1.5,.25,2,'roof');
+ function layout(grid,map){if(cache.has(grid))return cache.get(grid);const buildings=Terrain.buildingSites(grid);const boxes=[];for(const b of buildings){const add=(x,y,z,w,h,d,kind='wall')=>boxes.push({min:[b.x+x,y,b.z+z],max:[b.x+x+w,y+h,b.z+z+d],kind,building:b.id});
+  add(0,-.2,0,12,.22,12,'floor');add(0,3.35,0,9,.25,12,'floor');add(9,3.35,10,3,.25,2,'floor');add(0,6.95,0,10.5,.25,12,'roof');add(10.5,6.95,10,1.5,.25,2,'roof');
   // Ground entrance, window openings, continuous corner posts.
-  for(const y of [0,3.6]){add(0,y,0,.25,3.6,12);add(11.75,y,0,.25,3.6,12);add(0,y,11.75,12,3.6,.25);if(y===0){add(0,0,0,4,3.6,.25);add(7,0,0,5,3.6,.25);add(4,2.6,0,3,1,.25);}else{add(0,y,0,12,.9,.25);add(0,y+2.4,0,12,1.2,.25);for(const x of [0,3.5,7,10.5])add(x,y+.9,0,1.5,1.5,.25);}}
+  for(const y of [0,3.6]){add(0,y,0,.25,3.6,12);add(11.75,y,0,.25,1.05,12);add(11.75,y+2.35,0,.25,1.25,12);for(const [z,d]of [[0,2.3],[4.1,3.5],[9.4,2.6]])add(11.75,y+1.05,z,.25,1.3,d);add(0,y,11.75,12,3.6,.25);if(y===0){add(0,0,0,4,3.6,.25);add(7,0,0,5,3.6,.25);add(4,2.6,0,3,1,.25);}else{add(0,y,0,5,.9,.25);add(7,y,0,5,.9,.25);add(0,y+2.4,0,12,1.2,.25);for(const x of [0,3.5,7,10.5])add(x,y+.9,0,1.5,1.5,.25);}}
   // Two adjacent flights; the second returns toward the front and exits onto the roof.
   for(let n=0;n<20;n++){add(9,n*.18,.5+n*.5,1.375,.18,.5,'step');add(10.375,3.6+n*.18,10-n*.5,1.375,.18,.5,'step');}
   add(0,7.2,0,.2,.75,12,'rail');add(0,7.2,11.8,12,.75,.2,'rail');add(0,7.2,0,9,.75,.2,'rail');
   // Stone lintels and sills; openings retain their original collision dimensions.
   add(3.8,0,-.12,.2,2.6,.24,'trim');add(7,0,-.12,.2,2.6,.24,'trim');add(3.8,2.6,-.12,3.4,.2,.24,'trim');
   for(const x of [1.5,5,8.5]){add(x-.12,4.38,-.15,2.24,.12,.35,'trim');add(x-.12,6,-.1,2.24,.12,.25,'trim');add(x-.12,4.5,-.1,.12,1.5,.25,'trim');add(x+2,4.5,-.1,.12,1.5,.25,'trim');}
-  for(const z of [2.3,7.6])for(const y of [1.05,4.65]){add(12.005,y,z,.025,1.3,1.8,'glass');add(11.98,y-.12,z-.12,.2,.12,2.04,'trim');add(11.98,y+1.3,z-.12,.12,.12,2.04,'trim');add(12.03,y,z+.87,.07,1.3,.06,'trim');}
+  for(const z of [2.3,7.6])for(const y of [1.05,4.65]){add(11.98,y-.12,z-.12,.2,.12,2.04,'trim');add(11.98,y+1.3,z-.12,.12,.12,2.04,'trim');add(12.03,y,z+.87,.07,1.3,.06,'trim');}
   add(-.08,3.25,-.08,12.16,.12,.22,'trim');add(-.08,6.83,-.08,12.16,.12,.22,'trim');
+  // Furnished rooms keep the central entrance and both stair flights clear.
+  for(const y of [0,3.6]){
+   add(3.1,y,3,.16,2.85,1.2,'wall');add(3.1,y,6.2,.16,2.85,5.3,'wall');add(3.1,y+2.35,4.2,.16,.50,2,'wall');
+   add(.45,y+.72,7,2.1,.13,1.1,'wood');for(const x of [.5,2.35])for(const z of [7.05,7.9])add(x,y,z,.12,.72,.12,'wood');
+   add(.35,y,9.6,.48,2.3,1.8,'wood');for(let n=0;n<4;n++)add(.84,y+.25+n*.5,9.65,.04,.30,1.6,'fabric');
+   add(.65,y+.40,5.1,.8,.13,.8,'wood');for(const x of [.7,1.3])for(const z of [5.15,5.75])add(x,y,z,.08,.40,.08,'wood');add(.65,y+.5,5.8,.8,.6,.08,'wood');
+   add(5,y+.12,9.3,2.4,.42,1,'fabric');add(5,y+.50,10.15,2.4,.65,.20,'fabric');for(const x of [5,7.2])add(x,y+.45,9.3,.2,.4,.9,'fabric');
+  }
+  add(1.4,3.42,-1.8,8,.18,1.8,'floor');add(1.4,3.6,-1.8,8,.7,.1,'rail');for(const x of [1.4,9.3])add(x,3.6,-1.8,.1,.7,1.8,'rail');
   add(2,0,8,.55,3.35,.55,'wall');add(6.5,0,8,.55,3.35,.55,'wall');
- }const data={buildings,boxes};cache.set(grid,data);return data;}
+ }boxes.push(...Terrain.bridges(grid));const data={buildings,boxes};Env.setup(data);cache.set(grid,data);return data;}
  function contains(grid,map,x,z,margin=0){return layout(grid,map).buildings.some(b=>x>b.x-margin&&x<b.x+12+margin&&z>b.z-margin&&z<b.z+12+margin);}
  function rayBox(o,d,b,maxT){let lo=0,hi=maxT;for(let i=0;i<3;i++){if(Math.abs(d[i])<1e-9){if(o[i]<b.min[i]||o[i]>b.max[i])return null;continue;}let a=(b.min[i]-o[i])/d[i],c=(b.max[i]-o[i])/d[i];if(a>c)[a,c]=[c,a];lo=Math.max(lo,a);hi=Math.min(hi,c);if(hi<lo)return null;}return lo<=maxT?lo:null;}
- function ray(grid,map,o,d,maxT){let best=null;for(const b of layout(grid,map).boxes){const t=rayBox(o,d,b,best??maxT);if(t!==null&&(best===null||t<best))best=t;}return best;}
- function collide(grid,map,x,z,y,height=1.8,r=.35){for(const b of layout(grid,map).boxes){if(b.max[1]<=y+.4||b.min[1]>=y+height-.03)continue;const nx=Math.max(b.min[0],Math.min(x,b.max[0])),nz=Math.max(b.min[2],Math.min(z,b.max[2])),dx=x-nx,dz=z-nz,dist=Math.hypot(dx,dz);if(dist>=r)continue;if(dist>.00001){x+=dx/dist*(r-dist);z+=dz/dist*(r-dist);}else{const choices=[[Math.abs(x-b.min[0]),0,b.min[0]-r],[Math.abs(b.max[0]-x),0,b.max[0]+r],[Math.abs(z-b.min[2]),1,b.min[2]-r],[Math.abs(b.max[2]-z),1,b.max[2]+r]].sort((a,b)=>a[0]-b[0]);if(choices[0][1])z=choices[0][2];else x=choices[0][2];}}return [x,z];}
- function vertical(grid,map,x,z,y,height=1.8){let floor=-Infinity,ceiling=Infinity;for(const b of layout(grid,map).boxes){if(x<b.min[0]||x>b.max[0]||z<b.min[2]||z>b.max[2])continue;if(b.max[1]<=y+.4)floor=Math.max(floor,b.max[1]);if(b.min[1]>=y+height-.08)ceiling=Math.min(ceiling,b.min[1]);}return {floor,ceiling};}
- function trace(grid,map,o,d,maxT=180){let distance=ray(grid,map,o,d,maxT)??maxT;for(let t=.1;t<distance;t+=.2){const x=o[0]+d[0]*t,y=o[1]+d[1]*t,z=o[2]+d[2]*t,c=grid[Math.floor(z/4)]?.[Math.floor(x/4)]??1,h=({1:4,2:2.6,3:1.15,11:4.2})[c]||0;if((h&&y>=0&&y<=h)||(c===4&&y>=-1.3&&y<=0)||(y<=0&&![4,5,6,7].includes(c))){distance=t;break;}}return distance;}
+ function activeBoxes(grid,map){const data=layout(grid,map);if(data.collisionRevision!==data.environment.revision){
+    data.collisionBoxes=data.boxes.concat(Env.boxes(data));data.collisionRevision=data.environment.revision;
+    data.sectors=new Map();
+    for(const b of data.collisionBoxes){
+      const key=Math.floor(b.min[0]/16)+','+Math.floor(b.min[2]/16);
+      if(!data.sectors.has(key))data.sectors.set(key,{min:[Infinity,Infinity,Infinity],max:[-Infinity,-Infinity,-Infinity],boxes:[]});
+      const group=data.sectors.get(key);group.boxes.push(b);
+      for(let i=0;i<3;i++){group.min[i]=Math.min(group.min[i],b.min[i]);group.max[i]=Math.max(group.max[i],b.max[i]);}
+    }
+  }return data.collisionBoxes;}
+ function hit(grid,map,o,d,maxT){
+  activeBoxes(grid,map);let best=null;
+  for(const sector of layout(grid,map).sectors.values()){
+   if(rayBox(o,d,sector,best?.t??maxT)===null)continue;
+   for(const b of sector.boxes){const t=rayBox(o,d,b,best?.t??maxT);if(t!==null&&(!best||t<best.t))best={t,box:b,kind:b.kind,id:b.id};}
+  }
+  const terrain=Terrain.ray(grid,o,d,best?.t??maxT);return terrain!==null?{t:terrain,kind:'earth'}:best;
+ }
+ function nearbyBoxes(grid,map,x,z,r=0){
+  activeBoxes(grid,map);const near=[];
+  for(const sector of layout(grid,map).sectors.values()){
+   if(x+r<sector.min[0]||x-r>sector.max[0]||z+r<sector.min[2]||z-r>sector.max[2])continue;
+   near.push(...sector.boxes);
+  }
+  return near;
+ }
+ function ray(grid,map,o,d,maxT){return hit(grid,map,o,d,maxT)?.t??null;}
+ function collide(grid,map,x,z,y,height=1.8,r=.35){for(const b of nearbyBoxes(grid,map,x,z,r)){if(b.max[1]<=y+.4||b.min[1]>=y+height-.03)continue;const nx=Math.max(b.min[0],Math.min(x,b.max[0])),nz=Math.max(b.min[2],Math.min(z,b.max[2])),dx=x-nx,dz=z-nz,dist=Math.hypot(dx,dz);if(dist>=r)continue;if(dist>.00001){x+=dx/dist*(r-dist);z+=dz/dist*(r-dist);}else{const choices=[[Math.abs(x-b.min[0]),0,b.min[0]-r],[Math.abs(b.max[0]-x),0,b.max[0]+r],[Math.abs(z-b.min[2]),1,b.min[2]-r],[Math.abs(b.max[2]-z),1,b.max[2]+r]].sort((a,b)=>a[0]-b[0]);if(choices[0][1])z=choices[0][2];else x=choices[0][2];}}return [x,z];}
+ function vertical(grid,map,x,z,y,height=1.8){let floor=-Infinity,ceiling=Infinity;for(const b of nearbyBoxes(grid,map,x,z)){if(x<b.min[0]||x>b.max[0]||z<b.min[2]||z>b.max[2])continue;if(b.max[1]<=y+.4)floor=Math.max(floor,b.max[1]);if(b.min[1]>=y+height-.08)ceiling=Math.min(ceiling,b.min[1]);}return {floor,ceiling};}
+ function trace(grid,map,o,d,maxT=180){let distance=ray(grid,map,o,d,maxT)??maxT;for(let t=.1;t<distance;t+=.2){const x=o[0]+d[0]*t,y=o[1]+d[1]*t,z=o[2]+d[2]*t,c=grid[Math.floor(z/4)]?.[Math.floor(x/4)]??1,h=({1:4,2:2.6,3:1.15,11:4.2})[c]||0;if((h&&y>=0&&y<=h)||(c===4&&y>=-1.3&&y<=0)||(y<=Terrain.height(grid,x,z)&&![4,5,6,7].includes(c))){distance=t;break;}}return distance;}
  function create(T,scene,grid,map){
   const group=new T.Group();group.name='Walkable two-storey buildings';scene.add(group);const visual=layout(grid,map).boxes.slice();
   for(const b of layout(grid,map).buildings){const detail=(x,y,z,w,h,d,kind='trim')=>visual.push({min:[b.x+x,y,b.z+z],max:[b.x+x+w,y+h,b.z+z+d],kind,building:b.id});
@@ -30,8 +66,8 @@
    for(const x of [1.5,5,8.5])for(const side of [-.58,2.16]){detail(x+side,4.5,-.17,.5,1.5,.10,'wood');for(let k=0;k<6;k++)detail(x+side,4.55+k*.22,-.22,.5,.055,.08,'trim');}
    for(const x of [.45,11.3]){detail(x,0,-.20,.09,7.3,.09,'rail');detail(x-.07,2.4,-.31,.23,.37,.26,'glass');detail(x-.1,2.78,-.34,.29,.07,.32,'rail');}
   }const source=new T.BoxGeometry(1,1,1),textures=[],materials=[],geometries=[];
-  for(const kind of ['wall','floor','roof','step','rail','trim','glass','wood']){
-   const canvas=document.createElement('canvas');canvas.width=canvas.height=256;const c=canvas.getContext('2d');c.fillStyle=kind==='glass'?'#263c42':kind==='trim'?'#a99b81':kind==='wall'?(map==='inferno'?'#b49f84':'#c4b397'):kind==='roof'?'#89857b':kind==='rail'?'#66706e':'#a39883';c.fillRect(0,0,256,256);let seed=49;const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
+  for(const kind of ['wall','floor','roof','step','rail','trim','glass','wood','fabric']){
+   const canvas=document.createElement('canvas');canvas.width=canvas.height=256;const c=canvas.getContext('2d');c.fillStyle=kind==='glass'?'#263c42':kind==='trim'?'#a99b81':kind==='wall'?(map==='inferno'?'#b49f84':'#c4b397'):kind==='fabric'?'#496b68':kind==='roof'?'#89857b':kind==='rail'?'#66706e':'#a39883';c.fillRect(0,0,256,256);let seed=49;const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
    for(let n=0;n<12000;n++){const v=random();c.fillStyle=v>.5?'rgba(255,249,235,.10)':'rgba(51,40,27,.10)';c.fillRect(random()*256,random()*256,1+random()*3,1+random()*2);}
    for(let n=0;n<16;n++){const x=random()*256,y=random()*256,r=12+random()*35,g=c.createRadialGradient(x,y,0,x,y,r);g.addColorStop(0,'rgba(62,48,32,.12)');g.addColorStop(1,'rgba(62,48,32,0)');c.fillStyle=g;c.fillRect(x-r,y-r,r*2,r*2);}
    if(kind==='floor'||kind==='roof'){c.strokeStyle='#3e392c55';c.lineWidth=1.5;for(let y=0;y<256;y+=64){c.beginPath();c.moveTo(0,y);c.lineTo(256,y);c.stroke();for(let x=(y%128?32:0);x<256;x+=64){c.beginPath();c.moveTo(x,y);c.lineTo(x,y+64);c.stroke();}}}else if(kind==='wall'){for(let n=0;n<5;n++){let x=random()*256,y=random()*256;c.strokeStyle='#5b514233';c.lineWidth=.7;c.beginPath();c.moveTo(x,y);for(let k=0;k<6;k++){x+=(random()-.5)*12;y+=random()*9;c.lineTo(x,y);}c.stroke();}}
@@ -43,5 +79,5 @@
   }source.dispose();return {applyMaterials(find){const names={wall:'plaster_light',floor:'wood',roof:'ground',step:'limestone',rail:'steel',trim:'limestone',wood:'wood'};for(const m of materials){const base=find(names[m.userData.surfaceKind]);if(!base)continue;m.map=base.map;m.normalMap=base.normalMap;m.roughnessMap=base.roughnessMap;m.bumpMap=null;m.roughness=base.roughness;m.metalness=base.metalness;m.normalScale.copy(base.normalScale||new T.Vector2(1,1));m.needsUpdate=true;}},dispose(){for(const g of geometries)g.dispose();for(const m of materials)m.dispose();for(const t of textures)t.dispose();group.removeFromParent();}};
  }
 
- return {layout,contains,rayBox,ray,collide,vertical,trace,create};
+ return {layout,contains,rayBox,ray,hit,activeBoxes,collide,vertical,trace,create};
 });

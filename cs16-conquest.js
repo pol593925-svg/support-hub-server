@@ -27,7 +27,7 @@ function create({state,grid,emit,personal,spawn,finish,blast,reward=()=>{}}){
  function respawn(p,now){const index=[...state.players.values()].filter(v=>v.team===p.team).indexOf(p),pos=Props.safeSpawn(grid(),spawnPosition(p,Math.max(0,index)));
   p.alive=true;p.hp=100;p.armor=100;Classes.apply(p);p.kit=false;p.cqRespawnAt=0;p.cqProtectedUntil=now+1800;p.vehSeat=null;
   if(p.veh){emit('cs16_vehdie',{by:p.nick,kind:p.veh.kind,pos:p.veh.pos||pos});p.veh=null;}
-  p.lx=p.bx=pos[0];p.ly=0;p.lz=p.bz=pos[2];personal(sid(p));emit('cs16_cq_respawn',{nick:p.nick,pos,weapon:p.weapon,armor:p.armor,classId:p.classId,protectedUntil:p.cqProtectedUntil});
+  pos[1]=require('./cs16-terrain').walkHeight(grid(),pos[0],pos[2]);p.lx=p.bx=pos[0];p.ly=pos[1];p.lz=p.bz=pos[2];personal(sid(p));emit('cs16_cq_respawn',{nick:p.nick,pos,weapon:p.weapon,armor:p.armor,classId:p.classId,protectedUntil:p.cqProtectedUntil});
  }
  function tick(now=Date.now()){
   if(state.gm!=='cq'||state.phase!=='live'||!state.cq)return;
@@ -48,7 +48,7 @@ function create({state,grid,emit,personal,spawn,finish,blast,reward=()=>{}}){
   const g=grid(),x=d?.x,z=d?.z;if(!Number.isFinite(x)||!Number.isFinite(z)||x<4||z<4||x>g[0].length*4-4||z>g.length*4-4)return 'Выбери сектор внутри карты.';
   if(p.money<2000)return 'Для артобстрела нужно $2000.';if(now<(p.artilleryUntil||0))return 'Артобстрел перезаряжается (30 секунд).';
   p.money-=2000;p.artilleryUntil=now+30000;personal(sid(p));const plan=[];
-  for(let i=0;i<12;i++){const a=i*2.399963,r=i?Math.sqrt(i/11)*18:0,sx=Math.max(2,Math.min(g[0].length*4-2,x+Math.cos(a)*r)),sz=Math.max(2,Math.min(g.length*4-2,z+Math.sin(a)*r)),c=g[Math.floor(sz/4)][Math.floor(sx/4)],y=c===1?4:c===2?2.6:c===3?1.15:c===11?4.2:0;plan.push({pos:[sx,y+.15,sz],at:now+2500+i*350,by:p.nick});}
+  for(let i=0;i<12;i++){const a=i*2.399963,r=i?Math.sqrt(i/11)*18:0,sx=Math.max(2,Math.min(g[0].length*4-2,x+Math.cos(a)*r)),sz=Math.max(2,Math.min(g.length*4-2,z+Math.sin(a)*r)),c=g[Math.floor(sz/4)][Math.floor(sx/4)],y=c===1?4:c===2?2.6:c===3?1.15:c===11?4.2:require('./cs16-terrain').walkHeight(g,sx,sz);plan.push({pos:[sx,y+.15,sz],at:now+2500+i*350,by:p.nick});}
   shots.push(...plan);emit('cs16_artillery',{id:++serial,by:p.nick,team:p.team,x,z,radius:18,startsAt:now+2500,shots:plan});return null;
  }
  return {start,tick,killed,artillery,chooseSpawn,safeFlag};
