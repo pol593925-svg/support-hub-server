@@ -4,6 +4,7 @@
   if (root) root.CS16Environment = api;
 })(typeof window !== 'undefined' ? window : null, function () {
   'use strict';
+  const Passages = typeof window === 'undefined' ? require('./cs16-passages') : window.CS16Passages;
   function setup(data) {
     if (data.environment) return data;
     const doors = [],
@@ -30,6 +31,7 @@
           broken: false,
         });
     }
+    for (const portal of data.passages?.doors || []) doors.push({ ...portal, open: false });
     data.environment = { doors, windows, revision: 0 };
     return data;
   }
@@ -37,7 +39,7 @@
     const e = setup(data).environment;
     return [
       ...e.doors
-        .filter((d) => d.open)
+        .filter((d) => !d.kind && d.open)
         .flatMap((d) =>
           [-1, 1].map((side) => ({
             min: [d.x + side * 1.5 - 0.05, 0, d.z],
@@ -48,7 +50,7 @@
           })),
         ),
       ...e.doors
-        .filter((d) => !d.open)
+        .filter((d) => !d.kind && !d.open)
         .map((d) => ({
           min: [d.x - 1.5, 0, d.z - 0.12],
           max: [d.x + 1.5, 2.6, d.z + 0.12],
@@ -56,6 +58,7 @@
           id: d.id,
           building: d.building,
         })),
+      ...e.doors.filter((d) => d.kind).flatMap(Passages.leaves),
       ...e.windows.filter((w) => !w.broken),
     ];
   }
@@ -63,7 +66,8 @@
     const e = setup(data).environment;
     return {
       revision: e.revision,
-      closed: e.doors.filter((d) => !d.open).map((d) => d.id),
+      closed: e.doors.filter((d) => !d.defaultClosed && !d.open).map((d) => d.id),
+      opened: e.doors.filter((d) => d.defaultClosed && d.open).map((d) => d.id),
       broken: e.windows.filter((w) => w.broken).map((w) => w.id),
     };
   }
@@ -80,13 +84,15 @@
     data.collisionRevision = null;
     e.session = state.session;
     e.revision = state.revision;
-    for (const d of e.doors) d.open = !state.closed.includes(d.id);
+    const opened = new Set(Array.isArray(state.opened) ? state.opened : []),
+      closed = new Set(state.closed);
+    for (const d of e.doors) d.open = d.defaultClosed ? opened.has(d.id) : !closed.has(d.id);
     for (const w of e.windows) w.broken = state.broken.includes(w.id);
     return true;
   }
   function reset(data) {
     const e = setup(data).environment;
-    for (const d of e.doors) d.open = true;
+    for (const d of e.doors) d.open = !d.defaultClosed;
     for (const w of e.windows) w.broken = false;
     e.revision++;
   }
@@ -106,8 +112,14 @@
       [...players].some(
         (p) =>
           p.alive &&
-          Math.abs((p.bot ? p.bx : p.lx) - d.x) < 1.9 &&
-          Math.abs((p.bot ? p.bz : p.lz) - d.z) < 0.7 &&
+          Math.abs(
+            ((p.bot ? p.bx : p.lx) - d.x) * (d.kind ? -d.nz : 1) +
+              ((p.bot ? p.bz : p.lz) - d.z) * (d.kind ? d.nx : 0),
+          ) <
+            (d.width || 3) / 2 + 0.4 &&
+          Math.abs(
+            ((p.bot ? p.bx : p.lx) - d.x) * (d.nx || 0) + ((p.bot ? p.bz : p.lz) - d.z) * (d.kind ? d.nz : 1),
+          ) < 0.72 &&
           Math.abs(p.ly || 0) < 2.5,
       )
     )
@@ -127,7 +139,9 @@
   function nearest(data, pos) {
     return (
       setup(data)
-        .environment.doors.filter((d) => Math.hypot(pos.x - d.x, pos.y, pos.z - d.z) < 3.4)
+        .environment.doors.filter(
+          (d) => Math.hypot(pos.x - d.x, pos.y, pos.z - d.z) < (d.kind === 'secret' && !d.open ? 1.8 : 3.4),
+        )
         .sort((a, b) => Math.hypot(pos.x - a.x, pos.z - a.z) - Math.hypot(pos.x - b.x, pos.z - b.z))[0] ||
       null
     );

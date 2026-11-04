@@ -4520,6 +4520,7 @@ const CS16_CH2C = { '#': 1, '.': 0, 'D': 2, 'C': 3, '4': 4, '5': 5, '6': 6, '7':
 const CS16_GRID = {};
 for (const name in CS16_MAP_ROWS) {
   CS16_GRID[name] = CS16_MAP_ROWS[name].map(row => [...row].map(ch => CS16_CH2C[ch] != null ? CS16_CH2C[ch] : 1));
+  require('./cs16-passages').install(CS16_GRID[name]);
 }
 // вейпоинты для ботов (клетки)
 const CS16_WPS = {

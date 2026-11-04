@@ -1,5 +1,6 @@
 (function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;if(root)root.CS16Buildings=api;})(typeof window!=='undefined'?window:null,function(){'use strict';
  const Terrain=typeof window!=='undefined'?window.CS16Terrain:require('./cs16-terrain'),Env=typeof window!=='undefined'?window.CS16Environment:require('./cs16-environment');
+ const Passages=typeof window!=='undefined'?window.CS16Passages:require('./cs16-passages');
  const cache=new WeakMap();
  function layout(grid,map){if(cache.has(grid))return cache.get(grid);const buildings=Terrain.buildingSites(grid);const boxes=[];for(const b of buildings){const add=(x,y,z,w,h,d,kind='wall')=>boxes.push({min:[b.x+x,y,b.z+z],max:[b.x+x+w,y+h,b.z+z+d],kind,building:b.id});
   add(0,-.2,0,12,.22,12,'floor');add(0,3.35,0,9,.25,12,'floor');add(9,3.35,10,3,.25,2,'floor');add(0,6.95,0,10.5,.25,12,'roof');add(10.5,6.95,10,1.5,.25,2,'roof');
@@ -23,7 +24,7 @@
   }
   add(1.4,3.42,-1.8,8,.18,1.8,'floor');add(1.4,3.6,-1.8,8,.7,.1,'rail');for(const x of [1.4,9.3])add(x,3.6,-1.8,.1,.7,1.8,'rail');
   add(2,0,8,.55,3.35,.55,'wall');add(6.5,0,8,.55,3.35,.55,'wall');
- }boxes.push(...Terrain.bridges(grid));const data={buildings,boxes};Env.setup(data);cache.set(grid,data);return data;}
+ }boxes.push(...Terrain.bridges(grid));const passages=Passages.install(grid);boxes.push(...passages.boxes);const data={buildings,boxes,passages};Env.setup(data);cache.set(grid,data);return data;}
  function contains(grid,map,x,z,margin=0){return layout(grid,map).buildings.some(b=>x>b.x-margin&&x<b.x+12+margin&&z>b.z-margin&&z<b.z+12+margin);}
  function rayBox(o,d,b,maxT){let lo=0,hi=maxT;for(let i=0;i<3;i++){if(Math.abs(d[i])<1e-9){if(o[i]<b.min[i]||o[i]>b.max[i])return null;continue;}let a=(b.min[i]-o[i])/d[i],c=(b.max[i]-o[i])/d[i];if(a>c)[a,c]=[c,a];lo=Math.max(lo,a);hi=Math.min(hi,c);if(hi<lo)return null;}return lo<=maxT?lo:null;}
  function activeBoxes(grid,map){const data=layout(grid,map);if(data.collisionRevision!==data.environment.revision){
@@ -53,11 +54,11 @@
   return near;
  }
  function ray(grid,map,o,d,maxT){return hit(grid,map,o,d,maxT)?.t??null;}
- function collide(grid,map,x,z,y,height=1.8,r=.35){for(const b of nearbyBoxes(grid,map,x,z,r)){if(b.max[1]<=y+.4||b.min[1]>=y+height-.03)continue;const nx=Math.max(b.min[0],Math.min(x,b.max[0])),nz=Math.max(b.min[2],Math.min(z,b.max[2])),dx=x-nx,dz=z-nz,dist=Math.hypot(dx,dz);if(dist>=r)continue;if(dist>.00001){x+=dx/dist*(r-dist);z+=dz/dist*(r-dist);}else{const choices=[[Math.abs(x-b.min[0]),0,b.min[0]-r],[Math.abs(b.max[0]-x),0,b.max[0]+r],[Math.abs(z-b.min[2]),1,b.min[2]-r],[Math.abs(b.max[2]-z),1,b.max[2]+r]].sort((a,b)=>a[0]-b[0]);if(choices[0][1])z=choices[0][2];else x=choices[0][2];}}return [x,z];}
+ function collide(grid,map,x,z,y,height=1.8,r=.35){for(const b of nearbyBoxes(grid,map,x,z,r)){if(b.max[1]<=y+((b.part==='approach'||b.part==='floor')?.82:.4)||b.min[1]>=y+height-.03)continue;const nx=Math.max(b.min[0],Math.min(x,b.max[0])),nz=Math.max(b.min[2],Math.min(z,b.max[2])),dx=x-nx,dz=z-nz,dist=Math.hypot(dx,dz);if(dist>=r)continue;if(dist>.00001){x+=dx/dist*(r-dist);z+=dz/dist*(r-dist);}else{const choices=[[Math.abs(x-b.min[0]),0,b.min[0]-r],[Math.abs(b.max[0]-x),0,b.max[0]+r],[Math.abs(z-b.min[2]),1,b.min[2]-r],[Math.abs(b.max[2]-z),1,b.max[2]+r]].sort((a,b)=>a[0]-b[0]);if(choices[0][1])z=choices[0][2];else x=choices[0][2];}}return [x,z];}
  function vertical(grid,map,x,z,y,height=1.8){let floor=-Infinity,ceiling=Infinity;for(const b of nearbyBoxes(grid,map,x,z)){if(x<b.min[0]||x>b.max[0]||z<b.min[2]||z>b.max[2])continue;if(b.max[1]<=y+.4)floor=Math.max(floor,b.max[1]);if(b.min[1]>=y+height-.08)ceiling=Math.min(ceiling,b.min[1]);}return {floor,ceiling};}
  function trace(grid,map,o,d,maxT=180){let distance=ray(grid,map,o,d,maxT)??maxT;for(let t=.1;t<distance;t+=.2){const x=o[0]+d[0]*t,y=o[1]+d[1]*t,z=o[2]+d[2]*t,c=grid[Math.floor(z/4)]?.[Math.floor(x/4)]??1,h=({1:4,2:2.6,3:1.15,11:4.2})[c]||0;if((h&&y>=0&&y<=h)||(c===4&&y>=-1.3&&y<=0)||(y<=Terrain.height(grid,x,z)&&![4,5,6,7].includes(c))){distance=t;break;}}return distance;}
  function create(T,scene,grid,map){
-  const group=new T.Group();group.name='Walkable two-storey buildings';scene.add(group);const visual=layout(grid,map).boxes.slice();
+  const group=new T.Group();group.name='Walkable two-storey buildings';scene.add(group);const visual=layout(grid,map).boxes.filter(b=>!b.dust);
   for(const b of layout(grid,map).buildings){const detail=(x,y,z,w,h,d,kind='trim')=>visual.push({min:[b.x+x,y,b.z+z],max:[b.x+x+w,y+h,b.z+z+d],kind,building:b.id});
    // Facade dressing stays outside existing door/window openings and stair routes.
    detail(-.08,.08,11.82,12.16,.72,.18,'trim');detail(-.08,.08,-.08,4.08,.72,.18,'trim');detail(7,.08,-.08,5.08,.72,.18,'trim');for(const x of [-.08,11.9])detail(x,.08,0,.18,.72,12,'trim');

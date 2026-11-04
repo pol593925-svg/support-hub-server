@@ -17,7 +17,16 @@ function next(socket) {
   });
 }
 (async () => {
-  const grid = Array.from({ length: 100 }, () => Array(100).fill(0)),
+  const source = require('node:fs').readFileSync(path.join(__dirname, '../server.js'), 'utf8');
+  const rows = Array.from(
+    source
+      .split('const CS16_MAP_ROWS = {')[1]
+      .split('inferno:')[0]
+      .matchAll(/"([#.DC4567VBST]+)"/g),
+    (m) => m[1],
+  );
+  const types = { '#': 1, '.': 0, D: 2, C: 3, 4: 4, 5: 5, 6: 6, 7: 7, V: 8, B: 9, S: 10, T: 11 };
+  const grid = rows.map((row) => Array.from(row, (c) => types[c])),
     map = 'dust2',
     house = Buildings.layout(grid, map).buildings[0];
   const web = http.createServer(),
@@ -67,17 +76,28 @@ function next(socket) {
     const hit = await messages;
     assert.deepEqual(hit[0], hit[1]);
     assert.equal(hit[0].broken.length, 1);
+    const gate = Buildings.layout(grid, map).environment.doors.find((d) => d.kind === 'secret');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    shooter.lx = gate.x + gate.nx * 1.55;
+    shooter.lz = gate.z + gate.nz * 1.55;
+    messages = Promise.all([next(a), next(b)]);
+    a.emit('cs16_door', gate.id);
+    const opened = await messages;
+    assert.deepEqual(opened[0], opened[1]);
+    assert(opened[0].opened.includes(gate.id));
     const late = await join();
     const snapshot = next(late);
     late.emit('cs16_environment_get');
     const received = await snapshot;
     assert.deepEqual(received.closed, hit[0].closed);
     assert.deepEqual(received.broken, hit[0].broken);
+    assert.deepEqual(received.opened, opened[0].opened);
     const resets = Promise.all([next(a), next(b), next(late)]);
     field.reset();
     for (const d of await resets) {
       assert.deepEqual(d.closed, []);
       assert.deepEqual(d.broken, []);
+      assert.deepEqual(d.opened, []);
     }
     console.log(
       'PASS three real loopback Socket.IO clients: shared doors, shot/glass, late snapshot and round reset',
