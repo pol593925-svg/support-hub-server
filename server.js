@@ -1313,6 +1313,7 @@ const callsService=require('./calls-service')({app,io,User,Event});
 require('./team-access')({app,io,User,onlineUsers:()=>onlineUsers,authenticate:token=>callsService.actor(token)});
 require('./radio-service').install({app,mongoose,authenticate:token=>callsService.actor(token)});
 require('./exchange-review')({app,Exchange,authenticate:token=>callsService.actor(token)});
+require('./team-office')({app,mongoose,User,Event,authenticate:token=>callsService.actor(token)});
 require('./voxel-service')({io,mongoose,authenticate:token=>callsService.actor(token)});
 for(const protocol of [1,2])require('./royale-service')({io,protocol,authenticate:token=>callsService.actor(token)});
 require('./assistance-service')({io,authenticate:token=>callsService.actor(token),audit:data=>new Event({type:'remote_assistance',user:data.admin,date:todayStr(),data}).save()});
