@@ -39,6 +39,45 @@
  for(const recipe of recipes)if(recipe.station===15)recipe.smeltMs=10000*Math.max(...Object.values(recipe.out));
  const Bedrock=typeof window==='undefined'?require('./voxel-bedrock'):window.HubBedrock;
  const catalog=Bedrock.install(blocks,items,recipes);
+ // Encode both halves in the existing chunk edits so a single revision carries a whole door.
+ const doorIds=new Set(catalog.blockNames.filter(k=>k.endsWith('_door')).map(catalog.blockId));
+ const lever=catalog.ids.get('lever'),leverOn=-(lever*32+1),redstone=catalog.ids.get('redstone_block');
+ const doorStates=new Map(),width=3/16;
+ const panels=[[0,0,0,1,1,width],[1-width,0,0,1,1,1],[0,0,1-width,1,1,1],[0,0,0,width,1,1]];
+ function doorCode(id,dir,right,open,upper){return -(id*32+(dir&3)+(right?4:0)+(open?8:0)+(upper?16:0)+1);}
+ for(const id of doorIds){
+   const metal=/iron|copper/.test(catalog.keys.get(id));
+   Object.assign(blocks[id],{kind:metal?'pick':'axe',hardness:metal?5:3,tool:metal?1:0});
+   doorStates.set(id,{id,dir:0,right:false,open:false,upper:false,legacy:true,bounds:panels[0]});
+   for(let flags=0;flags<32;flags++){
+     const dir=flags&3,right=!!(flags&4),open=!!(flags&8),upper=!!(flags&16);
+     const side=(dir+(open?(right?1:3):0))%4;
+     doorStates.set(doorCode(id,dir,right,open,upper),{id,dir,right,open,upper,bounds:panels[side]});
+   }
+ }
+ const doorState=id=>doorStates.get(id),baseBlock=id=>doorState(id)?.id??(id===leverOn?lever:id);
+ const powerOffsets=[[0,-1,0],[0,2,0],[-1,0,0],[1,0,0],[0,0,-1],[0,0,1],[-1,1,0],[1,1,0],[0,1,-1],[0,1,1]];
+ function effectiveBlock(get,x,y,z){
+   const id=get(x,y,z),d=doorState(id);
+   if(!d||d.legacy||d.open)return id;
+   const baseY=d.upper?y-1:y;
+   for(const [dx,dy,dz] of powerOffsets){
+     const n=get(x+dx,baseY+dy,z+dz);if(n===leverOn||n===redstone)return doorCode(d.id,d.dir,d.right,true,d.upper);
+   }
+   return id;
+ }
+ function pointSolid(id,px,py,pz){
+   const d=doorState(id);if(!d)return solid(id);
+   const [x0,,z0,x1,,z1]=d.bounds,x=px-Math.floor(px),z=pz-Math.floor(pz);
+   return x>=x0&&x<=x1&&z>=z0&&z<=z1;
+ }
+ function bodyHits(pos,x,y,z,id,low){
+   if(!solid(id))return false;
+   const b=doorState(id)?.bounds;
+   if(!b)return intersects(pos,x,y,z,low);
+   return pos[0]+.28>x+b[0]&&pos[0]-.28<x+b[3]&&pos[1]+bodyHeight(low)>y&&pos[1]<y+1&&pos[2]+.28>z+b[2]&&pos[2]-.28<z+b[5];
+ }
+
  function costs(r,bag,grid){return r.options?Bedrock.plan(r,bag,grid):r.in;}
  function chestSlots(contents){return Object.entries(contents).reduce((n,[id,count])=>n+Math.ceil(count/(items[id]?.durability?1:64)),0);}
  function transfer(inventory,contents,wear,item,count,direction){if(!Number.isInteger(item)||!items[item]||item<=0||!Number.isInteger(count)||count<1||count>64||!['put','take'].includes(direction))throw Error('Неверный перенос');const bag={...inventory},chest={...contents},source=direction==='put'?bag:chest,target=direction==='put'?chest:bag;if((source[item]||0)<count)throw Error('Не хватает предметов');if(direction==='put'&&wear[item]!==undefined&&(bag[item]||0)-count<1)throw Error('Изношенный инструмент остаётся при тебе. Можно убрать новый запасной.');source[item]-=count;target[item]=(target[item]||0)+count;if(target[item]>9999||chestSlots(chest)>27)throw Error('Недостаточно места');return {inventory:bag,contents:chest};}
@@ -53,7 +92,7 @@
  function cactus(x,z,seed){return seed<0&&biome(x,z,seed)==='desert'&&height(x,z,seed)>WATER+1&&hash(x,z,seed+555)>.985&&Math.hypot(x,z)>5;}
  function trimmed(grid){const rows=grid.filter(row=>row.some(Boolean));if(!rows.length)return [];let left=Infinity,right=-1;for(const row of rows)row.forEach((id,x)=>{if(id){left=Math.min(left,x);right=Math.max(right,x);}});const top=grid.findIndex(row=>row.some(Boolean)),bottom=grid.length-1-[...grid].reverse().findIndex(row=>row.some(Boolean));return grid.slice(top,bottom+1).map(row=>row.slice(left,right+1));}
  function matchRecipe(grid,wanted){if(!Array.isArray(grid)||![2,3].includes(grid.length)||grid.some(row=>!Array.isArray(row)||row.length!==grid.length||row.some(id=>!Number.isInteger(id)||id<0||id&&!items[id])))return null;const trimmedShape=trimmed(grid),shape=JSON.stringify(trimmedShape);if(!trimmedShape.length)return null;return recipes.find(r=>(!wanted||r.id===wanted)&&r.pattern&&(r.options?Bedrock.match(r,trimmedShape):JSON.stringify(r.pattern)===shape||JSON.stringify(r.pattern.map(row=>[...row].reverse()))===shape))||null;}
- function mining(block,tool=0){const b=blocks[block],t=items[tool];if(!b||!b.hardness||b.fluid||b.unbreakable)return null;const correct=t?.kind===b.kind,harvest=!b.tool||(t?.kind==='pick'&&(t.tier||0)>=b.tool);const speed=correct?[1,2,4,6,8][t.tier||0]:1;return {ms:Math.ceil(b.hardness*(harvest?1500:5000)/speed/50)*50,harvest};}
+ function mining(block,tool=0){const b=blocks[doorState(block)?.id??(block===leverOn?lever:block)],t=items[tool];if(!b||!b.hardness||b.fluid||b.unbreakable)return null;const correct=t?.kind===b.kind,harvest=!b.tool||(t?.kind==='pick'&&(t.tier||0)>=b.tool);const speed=correct?[1,2,4,6,8][t.tier||0]:1;return {ms:Math.ceil(b.hardness*(harvest?1500:5000)/speed/50)*50,harvest};}
  function hash(x,z,seed=1){let n=Math.imul(x,374761393)^Math.imul(z,668265263)^seed;n=Math.imul(n^(n>>>13),1274126177);return ((n^(n>>>16))>>>0)/4294967296;}
  function noise(x,z,seed){const ix=Math.floor(x),iz=Math.floor(z),fx=x-ix,fz=z-iz,u=fx*fx*(3-2*fx),v=fz*fz*(3-2*fz);const a=hash(ix,iz,seed)*(1-u)+hash(ix+1,iz,seed)*u,b=hash(ix,iz+1,seed)*(1-u)+hash(ix+1,iz+1,seed)*u;return a*(1-v)+b*v;}
  function height(x,z,seed){return Math.floor(9+noise(x/55,z/55,seed)*17+noise(x/16,z/16,seed+91)*5);}
@@ -77,18 +116,18 @@
  const chunk=(x,z)=>[Math.floor(x/SIZE),Math.floor(z/SIZE)];
  const key=(x,y,z)=>`${((x%SIZE)+SIZE)%SIZE}_${y}_${((z%SIZE)+SIZE)%SIZE}`;
  const fluid=id=>id===12||(id>=29&&id<=36);
- const solid=id=>id!==0&&!fluid(id)&&id!==27&&id!==28&&!blocks[id]?.flower;
+ const solid=id=>id!==0&&!fluid(id)&&id!==27&&id!==28&&id!==lever&&id!==leverOn&&!blocks[id]?.flower;
  function validPos(p){return Array.isArray(p)&&p.length===3&&p.every(Number.isFinite)&&Math.abs(p[0])<LIMIT&&Math.abs(p[2])<LIMIT&&p[1]>=-8&&p[1]<HEIGHT+16;}
  function validCell(p){return validPos(p)&&p.every(Number.isInteger)&&p[1]>0&&p[1]<HEIGHT;}
  const eyeHeight=crouched=>crouched?1.22:1.6,bodyHeight=crouched=>crouched?1.45:1.75;
  function intersects(pos,x,y,z,crouched=false){return pos[0]+.28>x&&pos[0]-.28<x+1&&pos[1]+bodyHeight(crouched)>y&&pos[1]<y+1&&pos[2]+.28>z&&pos[2]-.28<z+1;}
  function craft(inventory,id,grid,selections){const r=recipes.find(r=>r.id===id);if(!r||r.reference||(grid&&!matchRecipe(grid,id)))throw Error('Неизвестный рецепт');const out={...inventory},custom=r.transform?Bedrock.custom(r,inventory,selections):null;for(const [item,n]of Object.entries(custom?.used||costs(r,out,grid))){if((out[item]||0)<n)throw Error('Не хватает ресурсов');out[item]-=n;}for(const [item,n]of Object.entries(custom?{[custom.result]:1}:r.out)){out[item]=(out[item]||0)+n;if(out[item]>9999)throw Error('Инвентарь заполнен');}return out;}
- function ray(origin,dir,get,range=6){let previous=origin.map(Math.floor);for(let t=0;t<=range;t+=.04){const at=origin.map((v,i)=>Math.floor(v+dir[i]*t));if(get(...at)!==0&&!fluid(get(...at)))return {at,previous};previous=at;}return null;}
+ function ray(origin,dir,get,range=6){let current=origin.map(Math.floor),previous=current;for(let t=0;t<=range;t+=.04){const p=origin.map((v,i)=>v+dir[i]*t),at=p.map(Math.floor);if(at.some((v,i)=>v!==current[i])){previous=current;current=at;}const id=get(...at);if(id&&!fluid(id)&&(!doorState(id)||pointSolid(id,...p)))return {at,previous};}return null;}
  const animals={cow:{name:'Корова',health:10,height:1.35,width:.5,speed:1.1,drop:{132:2,135:1}},sheep:{name:'Овца',health:8,height:1.15,width:.45,speed:1.25,drop:{132:1,134:2}},pig:{name:'Свинья',health:10,height:.95,width:.45,speed:1.15,drop:{132:2}}};
  function rayBox(origin,dir,min,max,range=3.2){let near=0,far=range;for(let i=0;i<3;i++){if(Math.abs(dir[i])<1e-8){if(origin[i]<min[i]||origin[i]>max[i])return null;continue;}let a=(min[i]-origin[i])/dir[i],b=(max[i]-origin[i])/dir[i];if(a>b)[a,b]=[b,a];near=Math.max(near,a);far=Math.min(far,b);if(far<near)return null;}return near;}
- function melee(origin,dir,target,get){if(!validPos(origin)||!Array.isArray(dir)||dir.length!==3||!dir.every(Number.isFinite)||Math.abs(Math.hypot(...dir)-1)>.02||!validPos(target.pos))return null;const spec=animals[target.kind],w=spec?.width||.28,h=spec?.height||bodyHeight(target.crouched),[x,y,z]=target.pos;const distance=rayBox(origin,dir,[x-w,y,z-w],[x+w,y+h,z+w]);if(distance===null)return null;for(let t=0;t<distance;t+=.05)if(solid(get(...origin.map((v,i)=>Math.floor(v+dir[i]*t)))))return null;return distance;}
+ function melee(origin,dir,target,get){if(!validPos(origin)||!Array.isArray(dir)||dir.length!==3||!dir.every(Number.isFinite)||Math.abs(Math.hypot(...dir)-1)>.02||!validPos(target.pos))return null;const spec=animals[target.kind],w=spec?.width||.28,h=spec?.height||bodyHeight(target.crouched),[x,y,z]=target.pos;const distance=rayBox(origin,dir,[x-w,y,z-w],[x+w,y+h,z+w]);if(distance===null)return null;for(let t=0;t<distance;t+=.05){const p=origin.map((v,i)=>v+dir[i]*t);if(pointSolid(get(...p.map(Math.floor)),...p))return null;}return distance;}
  // Finite seven-block horizontal flow; vertical water columns propagate downward.
  function flowAt(x,y,z,get){const old=get(x,y,z);if(old===12||old!==0&&!fluid(old))return old;if(y<=0||y>=HEIGHT)return old;const above=get(x,y+1,z);if(fluid(above))return 36;let level=8;for(const[dx,dz]of [[1,0],[-1,0],[0,1],[0,-1]]){const id=get(x+dx,y,z+dz);if(fluid(id)&&(id===12||solid(get(x+dx,y-1,z+dz))||get(x+dx,y-1,z+dz)===12))level=Math.min(level,(id===12||id===36?0:id-28)+1);}return level<=7?28+level:0;}
  function fluidHeight(id){return id===12?.9:id===36?1:fluid(id)?(8-(id-28))/8:1;}
- return {catalog,costs,eyeHeight,bodyHeight,fluid,fluidHeight,flowAt,animals,melee,rayBox,SIZE,HEIGHT,LIMIT,WATER,blocks,items,recipes,hash,height,terrain,generate,chunk,key,solid,validPos,validCell,intersects,craft,ray,matchRecipe,mining,biome,biomeNames,wearTool,consume,chestSlots,transfer};
+ return {catalog,costs,baseBlock,doorState,doorCode,effectiveBlock,pointSolid,bodyHits,lever,leverOn,redstone,eyeHeight,bodyHeight,fluid,fluidHeight,flowAt,animals,melee,rayBox,SIZE,HEIGHT,LIMIT,WATER,blocks,items,recipes,hash,height,terrain,generate,chunk,key,solid,validPos,validCell,intersects,craft,ray,matchRecipe,mining,biome,biomeNames,wearTool,consume,chestSlots,transfer};
 });

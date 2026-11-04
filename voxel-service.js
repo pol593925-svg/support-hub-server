@@ -37,10 +37,10 @@ module.exports=function install({io,mongoose,authenticate}){
  const roster=()=>[...players.values()].filter(p=>p.joined).map(publicPlayer);
  const environment=require('./voxel-environment')({io,ns,mongoose,world,storage,players,enqueue,live,Chunk,Player});
  async function leave(socket){const p=players.get(socket.id);if(!p)return;endVisit(p);await environment.flush();players.delete(socket.id);socket.leave(WORLD);if(p.joined){await Player.updateOne({_id:p.id},{$set:{pos:p.pos,...savedVitals(p),updatedAt:new Date()}});ns.to(WORLD).emit('players',roster());}}
- ns.use(async(socket,next)=>{try{if(socket.handshake.auth?.protocol!==3)return next(Error('Обнови Support Hub до 4.0.2 для входа в блочный мир Bedrock.'));const user=await authenticate(socket.handshake.auth?.token);if(!user)return next(Error('Войди заново в Support Hub для игры.'));socket.data.nick=user.username.toLowerCase();next();}catch{next(Error('Не удалось проверить вход. Попробуй позже.'));}});
+ ns.use(async(socket,next)=>{try{if(socket.handshake.auth?.protocol!==4)return next(Error('Обнови Support Hub до 4.0.4 для входа в блочный мир Bedrock.'));const user=await authenticate(socket.handshake.auth?.token);if(!user)return next(Error('Войди заново в Support Hub для игры.'));socket.data.nick=user.username.toLowerCase();next();}catch{next(Error('Не удалось проверить вход. Попробуй позже.'));}});
  ns.on('connection',socket=>{
   let requests=0,windowAt=Date.now();
-  function rpc(name,fn){socket.on(name,async(data,ack)=>{if(typeof ack!=='function')return;try{if(Date.now()-windowAt>1000){windowAt=Date.now();requests=0;}if(++requests>25)throw Error('Слишком много запросов');if(['edit','craft','mine','smelt','furnace','collect_furnace','eat','respawn','chest','chest_transfer','farm','attack','bucket','palette','florist_begin'].includes(name)&&queued>=128)throw Error('Мир занят, повтори через секунду');ack({ok:true,...await fn(data||{})});}catch(error){if(error.name==='MongoServerError')console.error('Voxel '+name+': '+error.message);ack({ok:false,error:error.message.includes('транзак')?error.message: error.name==='MongoServerError'?'Сохранение недоступно. Изменение не применено.':error.message});}});}
+  function rpc(name,fn){socket.on(name,async(data,ack)=>{if(typeof ack!=='function')return;try{if(Date.now()-windowAt>1000){windowAt=Date.now();requests=0;}if(++requests>25)throw Error('Слишком много запросов');if(['edit','craft','mine','smelt','furnace','collect_furnace','eat','respawn','chest','chest_transfer','farm','attack','bucket','palette','florist_begin','use_block'].includes(name)&&queued>=128)throw Error('Мир занят, повтори через секунду');ack({ok:true,...await fn(data||{})});}catch(error){if(error.name==='MongoServerError')console.error('Voxel '+name+': '+error.message);ack({ok:false,error:error.message.includes('транзак')?error.message: error.name==='MongoServerError'?'Сохранение недоступно. Изменение не применено.':error.message});}});}
   environment.attach(rpc,socket);
   rpc('info',async()=>({world:await world(),online:roster().length,pvp:true,canReset:socket.data.nick==='fifflaren'}));
   rpc('join',()=>enqueue(async()=>{
@@ -63,12 +63,45 @@ module.exports=function install({io,mongoose,authenticate}){
    p.mining={at:data.at.join(','),id,tool,start:Date.now(),ms:rule.ms,harvest:rule.harvest};return {duration:rule.ms,harvest:rule.harvest};
   }));
   rpc('mine_cancel',()=>enqueue(()=>{const p=players.get(socket.id);if(p)p.mining=null;return {};}));
+  rpc('use_block',data=>enqueue(async()=>{
+   const p=live(socket),at=data.at,w=await world();
+   if(!C.validCell(at)||!Number.isSafeInteger(data.expected)||Math.hypot(at[0]+.5-p.pos[0],at[1]+.5-p.pos[1]-C.eyeHeight(p.crouched),at[2]+.5-p.pos[2])>6)throw Error('Подойди ближе.');
+   const [x,y,z]=at,[cx,cz]=C.chunk(x,z),key=C.key(x,y,z);let change;
+   await mongoose.connection.transaction(async session=>{
+     const doc=await Chunk.findOne({world:storage(w),cx,cz}).session(session).lean();
+     const get=yy=>doc?.blocks?.[C.key(x,yy,z)]??C.terrain(x,yy,z,w.seed);
+     const old=get(y),d=C.doorState(old),edits={};
+     if(old!==data.expected)throw Error('Положение блока уже изменилось.');
+     const eye=[p.pos[0],p.pos[1]+C.eyeHeight(p.crouched),p.pos[2]];
+     const lo=C.chunk(Math.min(x,eye[0])-1,Math.min(z,eye[2])-1),hi=C.chunk(Math.max(x,eye[0])+1,Math.max(z,eye[2])+1);
+     const terrain=await environment.read(w,[lo,hi,[lo[0],hi[1]],[hi[0],lo[1]]],session);
+     const panel=C.doorState(terrain.get(x,y,z))?.bounds;
+     const end=[x+(panel?(panel[0]+panel[3])/2:.5),y+.5,z+(panel?(panel[2]+panel[5])/2:.5)];
+     const aim=end.map((v,i)=>v-eye[i]),distance=Math.hypot(...aim);
+     if(distance>.01&&C.ray(eye,aim.map(n=>n/distance),terrain.get,Math.min(6,distance+.1))?.at.join(',')!==at.join(','))throw Error('Блок закрыт препятствием.');
+     if(old===C.lever||old===C.leverOn)edits[key]=old===C.lever?C.leverOn:C.lever;
+     else if(d){
+       const iron=d.id===C.catalog.ids.get('iron_door');
+       if(iron&&!d.legacy)throw Error('Железной двери нужен активный рычаг или блок красного камня рядом.');
+       const by=d.upper?y-1:y,upper=get(by+1);
+       if(d.legacy){if(by+1>=C.HEIGHT||upper!==0&&!C.fluid(upper))throw Error('Освободи место над старой дверью.');}
+       else if(get(by)!==C.doorCode(d.id,d.dir,d.right,d.open,false)||upper!==C.doorCode(d.id,d.dir,d.right,d.open,true))throw Error('Половинки двери не совпадают.');
+       const open=!iron&&!d.open;
+       edits[C.key(x,by,z)]=C.doorCode(d.id,d.dir,d.right,open,false);
+       edits[C.key(x,by+1,z)]=C.doorCode(d.id,d.dir,d.right,open,true);
+     }else throw Error('Здесь нет двери или рычага.');
+     const set=Object.fromEntries(Object.entries(edits).map(([k,v])=>['blocks.'+k,v]));
+     const saved=await Chunk.findOneAndUpdate({world:storage(w),cx,cz},{$set:set,$inc:{revision:1}},{returnDocument:'after',session});
+     change={cx,cz,revision:saved.revision,blocks:edits};
+   });
+   ns.to(WORLD).emit('blocks',change);return {saved:true};
+  }));
   rpc('edit',data=>enqueue(async()=>{
    const p=live(socket),w=await world();if(!C.validCell(data.at)||!['break','place'].includes(data.action))throw Error('Неверное действие');
    const [x,y,z]=data.at;if(Math.hypot(x+.5-p.pos[0],y+.5-(p.pos[1]+C.eyeHeight(p.crouched)),z+.5-p.pos[2])>6)throw Error('Блок слишком далеко');if(Date.now()-p.lastEdit<140)throw Error('Подожди перед следующим действием');p.lastEdit=Date.now();
    const [cx,cz]=C.chunk(x,z),blockKey=C.key(x,y,z);let result;
    await mongoose.connection.transaction(async session=>{
-    const doc=await Chunk.findOne({world:storage(w),cx,cz}).session(session).lean(),old=doc?.blocks?.[blockKey]??C.terrain(x,y,z,w.seed),bag={...p.inventory};let id,wear={...p.wear},broke=false;
+    const doc=await Chunk.findOne({world:storage(w),cx,cz}).session(session).lean(),old=doc?.blocks?.[blockKey]??C.terrain(x,y,z,w.seed),bag={...p.inventory},edits={};const get=yy=>doc?.blocks?.[C.key(x,yy,z)]??C.terrain(x,yy,z,w.seed);let id,wear={...p.wear},broke=false;
     if(data.action==='break'){
      const mine=p.mining;if(!mine||mine.at!==data.at.join(',')||mine.id!==old)throw Error('Удерживай ЛКМ на блоке для добычи');
      if(Date.now()-mine.start<mine.ms)throw Error('Блок ещё не разрушен');
@@ -81,15 +114,31 @@ module.exports=function install({io,mongoose,authenticate}){
      const worn=C.wearTool(bag,wear,mine.tool);Object.assign(bag,worn.inventory);wear=worn.wear;broke=worn.broke;
      if((old===5||old===23)&&C.hash(x+y*13,z,w.seed+82)>.75)bag[118]=(bag[118]||0)+1;
      if(old===21)bag[119]=(bag[119]||0)+1;
-     id=0;if(mine.harvest&&![8,27,28].includes(old)){const item=C.blocks[old].drop||(old===1||old===26?2:old);bag[item]=(bag[item]||0)+1;if(bag[item]>9999)throw Error('Инвентарь заполнен');}
+     const door=C.doorState(old),base=door?.id??(old===C.leverOn?C.lever:old);
+     if(door&&!door.legacy){const other=y+(door.upper?-1:1);if(get(other)===C.doorCode(door.id,door.dir,door.right,door.open,!door.upper))edits[C.key(x,other,z)]=0;}
+     const above=C.doorState(get(y+1));if(above&&!above.legacy&&!above.upper&&get(y+2)===C.doorCode(above.id,above.dir,above.right,above.open,true)){
+       edits[C.key(x,y+1,z)]=edits[C.key(x,y+2,z)]=0;bag[above.id]=(bag[above.id]||0)+1;
+     }
+     id=0;if(mine.harvest&&![8,27,28].includes(old)){const item=C.blocks[base].drop||(old===1||old===26?2:base);bag[item]=(bag[item]||0)+1;if(bag[item]>9999)throw Error('Инвентарь заполнен');}
     }else{
-     id=data.block;const b=C.blocks[id];if(!Number.isInteger(id)||!b||id===0||b.unbreakable||b.fluid||[26,27,28].includes(id)||!(bag[id]>0))throw Error('Нет такого блока в инвентаре');if(C.solid(old))throw Error('Место уже занято');if([...players.values()].some(q=>C.intersects(q.pos,x,y,z,q.crouched)))throw Error('Здесь стоит игрок');bag[id]--;
+     id=data.block;const b=C.blocks[id];if(!Number.isInteger(id)||!b||id===0||b.unbreakable||b.fluid||[26,27,28].includes(id)||!(bag[id]>0))throw Error('Нет такого блока в инвентаре');if(C.solid(old)||old===C.lever||old===C.leverOn)throw Error('Место уже занято');if([...players.values()].some(q=>C.intersects(q.pos,x,y,z,q.crouched)))throw Error('Здесь стоит игрок');bag[id]--;
+     if(C.doorState(id)){
+       if(y+1>=C.HEIGHT||get(y+1)!==0&&!C.fluid(get(y+1))||!C.solid(get(y-1))||C.doorState(get(y-1)))throw Error('Двери нужны опора и два свободных блока.');
+       if([...players.values()].some(q=>C.intersects(q.pos,x,y+1,z,q.crouched)))throw Error('Здесь стоит игрок');
+       const dir=(Math.round(-(p.yaw||0)/(Math.PI/2))%4+4)%4;
+       const dx=[-1,0,1,0][dir],dz=[0,-1,0,1][dir];
+       const left=await cell(x+dx,y,z+dz,w.seed,session),right=await cell(x-dx,y,z-dz,w.seed,session);
+       const neighbor=C.doorState(left),hinge=neighbor?.dir===dir&&!neighbor.right||(!C.solid(left)&&C.solid(right)&&!C.doorState(right));
+       edits[C.key(x,y+1,z)]=C.doorCode(id,dir,hinge,false,true);id=C.doorCode(id,dir,hinge,false,false);
+     }
     }
     if(Object.values(bag).some(n=>n>9999))throw Error('Инвентарь заполнен');
-    const changed=await Chunk.findOneAndUpdate({world:storage(w),cx,cz},{$set:{['blocks.'+blockKey]:id,fluidPending:true},$inc:{revision:1}},{upsert:true,returnDocument:'after',session}).lean();
-    await Player.updateOne({_id:p.id},{$set:{inventory:bag,wear,pos:p.pos,updatedAt:new Date()}},{session});result={cx,cz,key:blockKey,block:id,revision:changed.revision,inventory:bag,wear,broke};
+    edits[blockKey]=id;const set=Object.fromEntries(Object.entries(edits).map(([k,v])=>['blocks.'+k,v]));
+    const changed=await Chunk.findOneAndUpdate({world:storage(w),cx,cz},{$set:{...set,fluidPending:true},$inc:{revision:1}},{upsert:true,returnDocument:'after',session}).lean();
+    await Player.updateOne({_id:p.id},{$set:{inventory:bag,wear,pos:p.pos,updatedAt:new Date()}},{session});result={cx,cz,key:blockKey,block:id,blocks:edits,revision:changed.revision,inventory:bag,wear,broke};
    });
-   p.exhaustion+=data.action==='break'?.025:0;p.mining=null;p.inventory=result.inventory;p.wear=result.wear;environment.changed(data.at);const {inventory:bag,wear,broke,...change}=result;ns.to(WORLD).emit('block',change);return {inventory:bag,wear,broke,saved:true};
+   p.exhaustion+=data.action==='break'?.025:0;p.mining=null;p.inventory=result.inventory;p.wear=result.wear;const {inventory:bag,wear,broke,blocks,...change}=result;for(const k of Object.keys(blocks)){const [lx,yy,lz]=k.split('_').map(Number);environment.changed([cx*16+lx,yy,cz*16+lz]);}
+   if(Object.keys(blocks).length===1)ns.to(WORLD).emit('block',change);else ns.to(WORLD).emit('blocks',{cx,cz,revision:result.revision,blocks});return {inventory:bag,wear,broke,saved:true};
   }));
   rpc('craft',data=>enqueue(async()=>{const p=live(socket);const r=data.grid?C.matchRecipe(data.grid,data.id):C.recipes.find(r=>r.id===data.id);if(!r||r.reference)throw Error('Неизвестный рецепт');if(data.grid&&data.grid.length===2&&r.station)throw Error('Нужен верстак');
    if(r.type==='furnace'||r.station===15)throw Error('Открой печь и запусти плавку');
@@ -148,7 +197,7 @@ module.exports=function install({io,mongoose,authenticate}){
    for(const id of players.keys())ns.sockets.get(id)?.leave(WORLD);players.clear();environment.clear();ns.emit('world_reset',{name:next.name});return {world:next};
   }));
   rpc('leave',()=>enqueue(async()=>{await leave(socket);return {};}));
-  socket.on('move',data=>{const p=players.get(socket.id);if(!p||p.flowerVisit||p.health<=0||!C.validPos(data?.pos))return;const now=Date.now(),dt=Math.min(2,(now-p.lastMove)/1000);if(dt<.075)return;if(Math.hypot(data.pos[0]-p.pos[0],data.pos[2]-p.pos[2])>dt*12+1){socket.emit('correct',p.pos);return;}p.exhaustion+=Math.hypot(data.pos[0]-p.pos[0],data.pos[2]-p.pos[2])*.02;p.fallPeak=Math.max(p.fallPeak,data.pos[1]);p.pos=data.pos;p.crouched=data.crouched===true;p.yaw=Number.isFinite(data.yaw)?data.yaw:0;p.lastMove=now;socket.to(WORLD).volatile.emit('move',publicPlayer(p));});
+  socket.on('move',data=>{const p=players.get(socket.id);if(!p||p.flowerVisit||p.health<=0||!C.validPos(data?.pos))return;const now=Date.now(),dt=Math.min(2,(now-p.lastMove)/1000);if(dt<.075)return;if(Math.hypot(data.pos[0]-p.pos[0],data.pos[2]-p.pos[2])>dt*12+1){socket.emit('correct',p.pos);return;}const sprint=data.sprinting===true&&data.crouched!==true&&p.hunger>6;p.exhaustion+=Math.hypot(data.pos[0]-p.pos[0],data.pos[2]-p.pos[2])*(sprint?.1:.02);p.fallPeak=Math.max(p.fallPeak,data.pos[1]);p.pos=data.pos;p.crouched=data.crouched===true;p.yaw=Number.isFinite(data.yaw)?data.yaw:0;p.lastMove=now;socket.to(WORLD).volatile.emit('move',publicPlayer(p));});
   socket.on('disconnect',()=>{enqueue(()=>leave(socket)).catch(e=>console.error('Voxel leave: '+e.message));});
  });
  let growing=false;const growthTimer=setInterval(()=>{if(growing||queued>=128)return;growing=true;enqueue(async()=>{const w=await world(),due=await Crop.find({world:storage(w),readyAt:{$lte:Date.now()}}).limit(64).lean();for(const crop of due){let change=null;await mongoose.connection.transaction(async session=>{const[x,y,z]=crop.at;if(await cell(x,y,z,w.seed,session)===27){const[cx,cz]=C.chunk(x,z),key=C.key(x,y,z),doc=await Chunk.findOneAndUpdate({world:storage(w),cx,cz},{$set:{['blocks.'+key]:28},$inc:{revision:1}},{upsert:true,returnDocument:'after',session}).lean();change={cx,cz,key,block:28,revision:doc.revision};}await Crop.deleteOne({_id:crop._id},{session});});if(change)ns.to(WORLD).emit('block',change);}}).catch(e=>console.error('Voxel crops: '+e.message)).finally(()=>growing=false);},5000);growthTimer.unref();
