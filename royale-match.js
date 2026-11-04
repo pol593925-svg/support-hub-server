@@ -849,6 +849,7 @@ function create(
         y: +p.y.toFixed(2),
         z: +p.z.toFixed(2),
         yaw: +(p.yaw || 0).toFixed(3),
+        pitch: +(p.pitch || 0).toFixed(3),
         hp: Math.ceil(p.hp || 0),
         armor: p.armor || 0,
         k: p.kills,
