@@ -4265,6 +4265,7 @@ const CS16_W = {
   smokegrenade: { price: 300 },
   defuser:   { price: 200, team: 'ct' }, // набор сапёра
   // 3.31.0: техника (покупка) и её оружие
+  veh_jet: { price: 4500 },
   veh_tank:  { price: 4000 },
   veh_bastion: {price:5500},
   veh_storm: {price:5500},
@@ -4652,7 +4653,7 @@ function cs16State() {
   };
 }
 function cs16Broadcast() { io.emit('cs16_state', cs16State()); }
-function cs16Personal(sid) { const p = cs16.players.get(sid); if (p) io.to(sid).emit('cs16_you', { money: p.money, hp: p.hp, armor: p.armor, weapon: p.weapon, team: p.team, alive: p.alive, kit: p.kit, respawnAt:p.cqRespawnAt||0,spawnFlag:p.cqSpawn??null }); }
+function cs16Personal(sid) { const p = cs16.players.get(sid); if (p) io.to(sid).emit('cs16_you', { money: p.money, hp: p.hp, armor: p.armor, weapon: p.weapon, team: p.team, alive: p.alive, kit: p.kit, respawnAt:p.cqRespawnAt||0,spawnFlag:p.cqSpawn??null,goldWeapon:p.goldWeapon||null }); }
 
 function cs16Spawn(team,index,total){if(cs16.gm==='assault'){const pos=cs16Front.spawn(team,index);pos[1]+=1.6;return pos;}index=Math.max(0,Number.isFinite(index)?Math.floor(index):0)%10;const pos=team==='ct'?[(57+index%3)*4,0,(9+Math.floor(index/3))*4]:[(cs16.map==='inferno'?51:48)*4+(index%5)*4,0,((cs16.map==='inferno'?105:108)+Math.floor(index/5))*4];const safe=require('./cs16-props').safeSpawn(CS16_GRID[cs16.map]||CS16_GRID.dust2,pos);return [safe[0],1.6+CS16Terrain.walkHeight(CS16_GRID[cs16.map],safe[0],safe[2]),safe[2]];}
 
@@ -4661,18 +4662,18 @@ function cs16ApplyHit(attacker, target, weapon, head, zone, dist, heavy, rawDama
   if((cs16.gm==='cq'||cs16.gm==='assault')&&target.cqProtectedUntil>Date.now())return false;
   const result = Number.isFinite(rawDamage)?{damage:rawDamage,armorUsed:0}:CS16Combat.damage(weapon,head?'head':zone,dist,target.armor,heavy);
   if (!result.damage) return;
-  const dmg = Math.min(target.hp,cs16Magic.absorb(target,result.damage));
+  const boost=!Number.isFinite(rawDamage)&&attacker?.goldWeapon===weapon?1.35:1;
+  const dmg = Math.min(target.hp,cs16Magic.absorb(target,Math.round(result.damage*boost)));
   target.armor = Math.max(0,target.armor-result.armorUsed);
   target.hp -= dmg;
   io.emit('cs16_hit', { target: target.nick, hp: target.hp, armor:target.armor, dmg, head: !!head, by: attacker ? attacker.nick : null });
   if (target.hp <= 0) {
     target.alive = false; target.deaths += 1;
     if (attacker) attacker.kills += 1;
-    target.armor = 0; target.weapon = null; target.rpgAmmo = 0; target.kit = false;
+    target.goldWeapon=null;target.armor = 0; target.weapon = null; target.rpgAmmo = 0; target.kit = false;
     if (attacker) {
       if (cs16.gm !== 'gg') attacker.money = Math.min(16000, attacker.money + 1000);
-      cs16StatAdd(attacker.nick, 'kill');
-      if (head) cs16StatAdd(attacker.nick, 'head');
+      if(!attacker.army){cs16StatAdd(attacker.nick, 'kill');if(head)cs16StatAdd(attacker.nick, 'head');}
     }
     cs16StatAdd(target.nick, 'death');
     io.emit('cs16_death', { nick: target.nick, killer: attacker ? attacker.nick : null, weapon, head: !!head });
@@ -4892,7 +4893,7 @@ function cs16StartRound() {
     p.alive = true; p.hp = 100; p.vehSeat=null; p.veh = null; // 3.32.0: техника не переживает раунд
     if (cs16.gm === 'gg') { p.ggIdx = 0; p.weapon = CS16_GG_LADDER[0]; }
     else if (!p.weapon) p.weapon = p.team === 't' ? 'glock' : 'usp';
-    p.frontSeat=null;p.frontChargeAt=0;p.cqRespawnAt=0;if(cs16.gm==='assault'){CS16Classes.apply(p);p.money=5000;p.cqProtectedUntil=cs16.freezeEnds+1800;}
+    p.frontSeat=null;p.strikeJet=null;p.goldWeapon=null;p.frontChargeAt=0;p.cqRespawnAt=0;if(cs16.gm==='assault'){CS16Classes.apply(p);p.money=5000;p.cqProtectedUntil=cs16.freezeEnds+1800;}
     if(cs16.gm!=='cq')p.money = Math.min(16000, p.money + 500); // 3.15.5: доход каждый раунд
   }
   cs16Broadcast();
@@ -4905,9 +4906,23 @@ function cs16StartRound() {
       p.lx=pos[0];p.ly=pos[1]-1.6;p.lz=pos[2];return { id,nick:p.nick, pos,weapon:p.weapon,armor:p.armor,classId:p.classId };
     }),
   });
-  cs16Later(() => { cs16.phase = 'live'; cs16Broadcast(); io.emit('cs16_live'); }, 6000);
+  const generation=cs16Front.status().epoch;
+  function startWhenReady(){
+    if(cs16.phase!=='freeze'||generation!==cs16Front.status().epoch)return;
+    const waiting=cs16.army?[...cs16.players.values()].filter(p=>p.team&&!p.bot&&p.armyLoader&&p.readyEpoch!==generation):[];
+    if(waiting.length){
+      if(Date.now()-now>=100000){cs16Front.clear();cs16.phase='lobby';cs16.round=0;cs16Broadcast();io.to('cs16-front').emit('cs16_err','Матч не начался: один из игроков не загрузил карту. Можно повторить старт.');return;}
+      io.to('cs16-front').emit('cs16_army_wait',{epoch:generation,count:waiting.length});
+      cs16Later(startWhenReady,500);return;
+    }
+    const delay=Math.max(0,Date.now()-cs16.freezeEnds);
+    cs16.roundEnds+=delay;cs16.buyUntil+=delay;cs16.freezeEnds+=delay;
+    cs16.phase='live';cs16Broadcast();io.emit('cs16_live');
+    if(cs16.gm==='classic')cs16.roundTimeout=setTimeout(()=>cs16EndRound('ct','Время вышло'),115000);
+  }
+  cs16Later(startWhenReady,6000);
   // 3.24.0: в Gun-Game раунд бесконечный (победа на ноже), таймер выключен
-  if (cs16.gm === 'classic') cs16.roundTimeout = setTimeout(() => cs16EndRound('ct', 'Время вышло'), 6000 + 115000);
+
 }
 
 function cs16EndRound(winner, reason) {
@@ -5015,6 +5030,10 @@ io.on('connection', (socket) => {
   });
 
   fieldEnvironment.attach(socket);
+  socket.on('cs16_army_loader',()=>{const p=cs16.players.get(socket.id);if(p)p.armyLoader=true;});
+  socket.on('cs16_army_ready',d=>{const p=cs16.players.get(socket.id);if(p&&cs16.phase==='freeze'&&d?.epoch===cs16Front.status().epoch&&d.map===cs16.map)p.readyEpoch=d.epoch;});
+  socket.on('cs16_army_bomb',()=>{const error=cs16Front.dropBomb(cs16.players.get(socket.id));if(error)socket.emit('cs16_err',error);});
+  socket.on('cs16_army_claim',()=>{const error=cs16Front.claim(cs16.players.get(socket.id));if(error)socket.emit('cs16_err',error);else cs16Personal(socket.id);});
   socket.on('cs16_army',enabled=>{if(typeof enabled!=='boolean'||socket.id!==cs16HostId()||cs16.phase!=='lobby')return;
     cs16.army=enabled;if(enabled)for(const [id,p]of cs16.players)if(p.bot){cs16.players.delete(id);io.emit('cs16_leave',{nick:p.nick});}cs16Broadcast();});
   socket.on('cs16_front_charge',d=>{const error=cs16Front.requestCharge(cs16.players.get(socket.id),d?.dir);if(error)socket.emit('cs16_err',error);});
@@ -5253,7 +5272,8 @@ io.on('connection', (socket) => {
     if (!w || item === 'knife') return;
     if (w.team && w.team !== p.team) { io.to(socket.id).emit('cs16_err', 'Это оружие не твоей команды'); return; }
     if (p.money < w.price) { io.to(socket.id).emit('cs16_err', 'Не хватает денег'); return; }
-    if (item === 'kevlar') { if (p.armor >= 100) return; p.armor = 100; }
+    if(item==='veh_jet'){const error=cs16Front.buyJet(p);if(error){socket.emit('cs16_err',error);return;}}
+    else if (item === 'kevlar') { if (p.armor >= 100) return; p.armor = 100; }
     else if (item === 'defuser') { if (p.kit) return; p.kit = true; }
     else if (item.startsWith('veh_') && CS16Vehicles.types[item.slice(4)]) { if(p.veh||p.vehSeat){io.to(socket.id).emit('cs16_err','У тебя уже есть техника или занято место стрелка');return;} const variant=item.slice(4),v=CS16Vehicles.types[variant];p.veh = { kind:v.kind,variant,hp:v.hp,max:v.hp }; }
     else if (item === 'hegrenade' || item === 'flashbang' || item === 'smokegrenade') { /* гранаты — клиент считает лимит */ }
@@ -5456,5 +5476,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '3.30.0', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '4.0.0', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });

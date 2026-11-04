@@ -4,9 +4,9 @@ function grid(map){
  vm.runInNewContext(source.slice(source.indexOf('const CS16_MAP_ROWS ='),source.indexOf('// вейпоинты для ботов'))+'\nglobalThis.grid=CS16_GRID;',ctx);
  return ctx.grid[map];
 }
-function game(map,army,gm='assault'){
+function game(map,army,gm='assault',hitHuman=()=>{}){
  const g=grid(map),state={map,gm,army,phase:'live',players:new Map(),freezeEnds:1000},events=[],results=[],frames=[];
- const service=Front.create({state,grid:()=>g,emit:(n,d)=>events.push({n,d}),frame:(n,d)=>frames.push(d),hitHuman(){},credit(){},wipe(){},radial(){},respawn:(p,pos)=>{p.alive=true;p.lx=pos[0];p.ly=pos[1];p.lz=pos[2];p.cqRespawnAt=0;},finish:t=>{results.push(t);state.phase='matchend';}});
+ const service=Front.create({state,grid:()=>g,emit:(n,d)=>events.push({n,d}),frame:(n,d)=>frames.push(d),hitHuman,credit(){},wipe(){},radial(){},respawn:(p,pos)=>{p.alive=true;p.lx=pos[0];p.ly=pos[1];p.lz=pos[2];p.cqRespawnAt=0;},finish:t=>{results.push(t);state.phase='matchend';}});
  service.reset();return {g,state,service,events,results,frames};
 }
 for(const map of ['dust2','inferno','frontline']){
@@ -44,6 +44,39 @@ test('three sequential sectors, contested capture, finite attacking tickets and 
  other.service.tick(3000);assert.deepEqual(other.results,['ct']);
  const timed=game('frontline',false);timed.service.tick(timed.state.roundEnds+1);assert.deepEqual(timed.results,['ct']);
 });
+test('spread spawns, visible human engagement and player bullet damage',()=>{
+ const hits=[], {service,state,g}=game('frontline',true,'assault',(...a)=>hits.push(a));
+ const units=service.units();
+ for(const team of ['t','ct']){
+   const own=units.filter(u=>u.team===team);
+   assert(new Set(own.map(u=>Math.floor(u.x/64)+','+Math.floor(u.z/64))).size>=8);
+   assert(own.every(u=>g[Math.floor(u.z/4)][Math.floor(u.x/4)]===0));
+ }
+ const bot=units[50],p={nick:'Tester',team:'t',alive:true,weapon:'ak47',lx:239,ly:0,lz:209};
+ state.players.set('p',p);
+ for(const u of units){u.alive=false;u.respawn=Infinity;}
+ Object.assign(bot,{alive:true,x:239,y:0,z:199,protectedUntil:0,nextShot:0});
+ service.tick(3000);
+ assert(hits.some(h=>h[1]===p));
+ const dir=[bot.x-p.lx,bot.y+1.4-1.5,bot.z-p.lz],d=Math.hypot(...dir);
+ for(let i=0;i<8&&bot.alive;i++)service.shoot(p,{origin:[p.lx,1.5,p.lz],dir:dir.map(v=>v/d),distance:d,weapon:'ak47'},4000+i*170);
+ assert(!bot.alive);
+});
+test('purchased fast aircraft, one drop per match, crater and exclusive thermal rifle pickup',()=>{
+ const {service,state,g,events}=game('dust2',true);const p={nick:'Pilot',team:'t',alive:true},q={nick:'Wing',team:'t',alive:true};
+ state.players.set('p',p);state.players.set('q',q);
+ assert(service.dropBomb(p,3000));assert.equal(service.buyJet(p),null);assert(service.buyJet(q));
+ const u=service.units()[p.frontSeat];Object.assign(u,{x:240,z:240,y:50,yaw:0});
+ service.control(p,{yaw:0,pitch:0,lift:0,side:0,forward:1,fire:false},2900);service.tick(3000);
+ assert(240-u.z>19);assert.equal(service.dropBomb(p,3100),null);assert(service.dropBomb(p,3200));
+ service.leave(p);service.tick(6050);assert(!service.status().gold);service.tick(6200);
+ const c=service.snapshot().crater;assert(c&&service.status().gold);assert(service.snapshot().ids.length>100);
+ assert(F.depth(g,c.x,c.z)>7);assert.equal(events.filter(e=>e.n==='cs16_army_impact').length,1);
+ assert(service.claim(q));Object.assign(q,{lx:c.x,ly:T.height(g,c.x,c.z),lz:c.z});assert.equal(service.claim(q),null);
+ assert.equal(q.goldWeapon,'ak47');assert(service.claim(q));assert(!service.snapshot().gold);
+ state.round=2;service.reset();assert(service.status().bombUsed);state.round=1;service.reset();assert(!service.status().bombUsed);
+});
+
 test('pilot kills, respawns, reset and snapshot frame budget',()=>{
  const {service,state,frames}=game('frontline',true);const bot=service.units()[50];bot.hp=10;const p={team:'t',alive:true,nick:'Alpha',kills:0};state.players.set(1,p);
  service.blast(p,[bot.x,bot.y,bot.z],4,2700);assert(!bot.alive);service.tick(9250);assert(bot.alive);

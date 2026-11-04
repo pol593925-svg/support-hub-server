@@ -2,7 +2,7 @@
  'use strict';
  const cell=4, key=(grid,x,z)=>Math.floor(z/cell)*grid[0].length+Math.floor(x/cell);
  function damage(grid){return grid.frontDamage||(grid.frontDamage={original:new Map(),revision:0});}
- function reset(grid){const d=damage(grid),w=grid[0].length;for(const [id,v] of d.original)grid[Math.floor(id/w)][id%w]=v;d.original.clear();d.revision++;}
+ function reset(grid){const d=damage(grid),w=grid[0].length;for(const [id,v] of d.original)grid[Math.floor(id/w)][id%w]=v;d.original.clear();d.crater=null;d.revision++;}
  function apply(grid,ids){const d=damage(grid),w=grid[0].length,added=[];
    for(const id of ids){if(!Number.isInteger(id)||id<0||id>=w*grid.length||d.original.has(id))continue;
      const x=id%w,z=Math.floor(id/w);if(x<1||z<1||x>=w-1||z>=grid.length-1)continue;
@@ -19,6 +19,8 @@
  function ruined(grid,x,z){return grid.frontDamage?.original.has(key(grid,x,z))||false;}
  function depth(grid,x,z){
    if(!ruined(grid,x,z))return 0;
+   const c=grid.frontDamage.crater;
+   if(c){const t=Math.hypot(x-c.x,z-c.z)/c.r;if(t<1)return c.depth*(1-t*t)**2;}
    const u=x%4,v=z%4;return Math.min(u,v,4-u,4-v,1)*.85;
  }
  // Partition only boxes crossing demolished columns. Each remaining rectangle retains its original collision height.
@@ -65,5 +67,6 @@
    rect(44,73,15,2,'4');rect(43,73,1,2,'5');rect(59,73,1,2,'7');
    return rows.map(row=>row.join(''));
  }
- return {damage,apply,reset,footprint,ruined,depth,clip,key,openCell,sectors,district};
+ function setCrater(grid,c){const d=damage(grid);d.crater=c;d.revision++;}
+ return {damage,apply,reset,footprint,ruined,depth,clip,key,openCell,sectors,district,setCrater};
 });
