@@ -3,7 +3,7 @@ const Classes=require('./cs16-classes'),Props=require('./cs16-props'),Buildings=
 function makeFlags(grid){const h=grid.length,w=grid[0].length,used=[];return [[.28,.24],[.72,.24],[.5,.5],[.28,.76],[.72,.76]].map(([fx,fz],i)=>{
  let best=null,score=Infinity;for(let z=2;z<h-2;z++)for(let x=2;x<w-2;x++){if(grid[z][x]!==0||Buildings.contains(grid,'',x*4+2,z*4+2,2)||used.some(p=>Math.hypot(p.x-x*4-2,p.z-z*4-2)<35))continue;let open=0;for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++)if(grid[z+dz][x+dx]===0)open++;const d=(x-w*fx)**2+(z-h*fz)**2+(9-open)*5;if(d<score){score=d;best={id:i,label:'ABCDE'[i],x:x*4+2,z:z*4+2,owner:null,capturing:null,progress:0,contested:false};}}
  if(!best)throw Error('Cannot place conquest flag');used.push(best);return best;});}
-function create({state,grid,emit,personal,spawn,finish,blast,reward=()=>{}}){
+function create({state,grid,emit,personal,spawn,finish,blast,army=()=>[],reward=()=>{}}){
  let lastTick=0,nextIncome=0,shots=[],serial=0;
  const sid=p=>[...state.players].find(([,v])=>v===p)?.[0];
  function start(now){state.scores={t:0,ct:0};state.winner=null;state.cq={flags:makeFlags(grid()),limit:50};state.roundEnds=state.freezeEnds+600000;state.buyUntil=state.roundEnds;lastTick=state.freezeEnds;nextIncome=state.freezeEnds+10000;shots=[];
@@ -34,7 +34,7 @@ function create({state,grid,emit,personal,spawn,finish,blast,reward=()=>{}}){
   if(now>=state.roundEnds){finish(winner());return;}
   const dt=Math.max(0,Math.min(1.5,(now-lastTick)/1000));lastTick=now;
   for(const p of state.players.values())if(p.team&&!p.alive){if(!p.cqRespawnAt)p.cqRespawnAt=now+4000;if(now>=p.cqRespawnAt)respawn(p,now);}
-  for(const f of state.cq.flags){const nearby=[...state.players.values()].filter(p=>p.alive&&p.team&&Math.abs(p.bot?0:p.ly||0)<3&&Math.hypot((p.bot?p.bx:p.lx)-f.x,(p.bot?p.bz:p.lz)-f.z)<=10);const teams=new Set(nearby.map(p=>p.team));f.contested=teams.size>1;
+  for(const f of state.cq.flags){const nearby=[...state.players.values()].filter(p=>p.alive&&p.team&&Math.abs(p.bot?0:p.ly||0)<3&&Math.hypot((p.bot?p.bx:p.lx)-f.x,(p.bot?p.bz:p.lz)-f.z)<=10);const soldiers=army().filter(u=>u.alive&&u.kind==='foot'&&Math.abs(u.y)<3&&Math.hypot(u.x-f.x,u.z-f.z)<=10);const teams=new Set([...nearby,...soldiers].map(p=>p.team));f.contested=teams.size>1;
    if(teams.size!==1){if(!teams.size){f.progress=Math.max(0,f.progress-dt);if(!f.progress)f.capturing=null;}continue;}
    const team=[...teams][0];if(f.owner===team){f.progress=0;f.capturing=null;continue;}if(f.capturing!==team){f.capturing=team;f.progress=0;}f.progress=Math.min(8,f.progress+dt);
    if(f.progress>=8){f.owner=team;f.progress=0;f.capturing=null;for(const p of nearby){p.money=Math.min(16000,p.money+750);if(!p.cqStats)p.cqStats={captures:0,defenses:0,vehicles:0,vehicleKills:0,teamwork:0};p.cqStats.captures++;p.cqStats.teamwork+=5;reward(p);personal(sid(p));}emit('cs16_cq_flag',{label:f.label,owner:team,reward:750});}

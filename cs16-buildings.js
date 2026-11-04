@@ -1,6 +1,7 @@
 (function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;if(root)root.CS16Buildings=api;})(typeof window!=='undefined'?window:null,function(){'use strict';
  const Terrain=typeof window!=='undefined'?window.CS16Terrain:require('./cs16-terrain'),Env=typeof window!=='undefined'?window.CS16Environment:require('./cs16-environment');
  const Passages=typeof window!=='undefined'?window.CS16Passages:require('./cs16-passages');
+ const Front=typeof window!=='undefined'?window.CS16Front:require('./cs16-front');
  const cache=new WeakMap();
  function layout(grid,map){if(cache.has(grid))return cache.get(grid);const buildings=Terrain.buildingSites(grid);const boxes=[];for(const b of buildings){const add=(x,y,z,w,h,d,kind='wall')=>boxes.push({min:[b.x+x,y,b.z+z],max:[b.x+x+w,y+h,b.z+z+d],kind,building:b.id});
   add(0,-.2,0,12,.22,12,'floor');add(0,3.35,0,9,.25,12,'floor');add(9,3.35,10,3,.25,2,'floor');add(0,6.95,0,10.5,.25,12,'roof');add(10.5,6.95,10,1.5,.25,2,'roof');
@@ -27,8 +28,8 @@
  }boxes.push(...Terrain.bridges(grid));const passages=Passages.install(grid);boxes.push(...passages.boxes);const data={buildings,boxes,passages};Env.setup(data);cache.set(grid,data);return data;}
  function contains(grid,map,x,z,margin=0){return layout(grid,map).buildings.some(b=>x>b.x-margin&&x<b.x+12+margin&&z>b.z-margin&&z<b.z+12+margin);}
  function rayBox(o,d,b,maxT){let lo=0,hi=maxT;for(let i=0;i<3;i++){if(Math.abs(d[i])<1e-9){if(o[i]<b.min[i]||o[i]>b.max[i])return null;continue;}let a=(b.min[i]-o[i])/d[i],c=(b.max[i]-o[i])/d[i];if(a>c)[a,c]=[c,a];lo=Math.max(lo,a);hi=Math.min(hi,c);if(hi<lo)return null;}return lo<=maxT?lo:null;}
- function activeBoxes(grid,map){const data=layout(grid,map);if(data.collisionRevision!==data.environment.revision){
-    data.collisionBoxes=data.boxes.concat(Env.boxes(data));data.collisionRevision=data.environment.revision;
+ function activeBoxes(grid,map){const data=layout(grid,map);if(data.collisionRevision!==data.environment.revision||data.frontRevision!==(grid.frontDamage?.revision||0)){
+    data.frontRevision=grid.frontDamage?.revision||0;data.collisionBoxes=data.boxes.concat(Env.boxes(data));if(grid.frontDamage?.original.size)data.collisionBoxes=data.collisionBoxes.flatMap(b=>Front.clip(grid,b));data.collisionRevision=data.environment.revision;
     data.sectors=new Map();
     for(const b of data.collisionBoxes){
       const key=Math.floor(b.min[0]/16)+','+Math.floor(b.min[2]/16);

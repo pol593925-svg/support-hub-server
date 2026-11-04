@@ -4533,6 +4533,7 @@ const CS16_MAP_ROWS = {
   ]
 };
 const CS16_CH2C = { '#': 1, '.': 0, 'D': 2, 'C': 3, '4': 4, '5': 5, '6': 6, '7': 7, 'V': 8, 'B': 9, 'S': 10, 'T': 11 };
+CS16_MAP_ROWS.frontline=require('./cs16-front').district();
 const CS16_GRID = {};
 for (const name in CS16_MAP_ROWS) {
   CS16_GRID[name] = CS16_MAP_ROWS[name].map(row => [...row].map(ch => CS16_CH2C[ch] != null ? CS16_CH2C[ch] : 1));
@@ -4595,13 +4596,38 @@ const cs16 = {
   roundTimeout: null,  // таймер «время вышло» (отменяется закладкой бомбы)
 };
 
-const cs16Conquest=require('./cs16-conquest').create({state:cs16,grid:()=>CS16_GRID[cs16.map]||CS16_GRID.dust2,emit:(name,data)=>io.emit(name,data),personal:cs16Personal,spawn:cs16Spawn,finish:cs16EndMatch,reward:p=>cs16StatAdd(p.nick,'obj'),blast:(attacker,pos)=>{
+const cs16Conquest=require('./cs16-conquest').create({state:cs16,grid:()=>CS16_GRID[cs16.map]||CS16_GRID.dust2,emit:(name,data)=>io.emit(name,data),personal:cs16Personal,spawn:cs16Spawn,finish:cs16EndMatch,army:()=>cs16Front.units(),reward:p=>cs16StatAdd(p.nick,'obj'),blast:(attacker,pos)=>{
   cs16VehBoom(attacker,pos,'artillery');const ids=[];for(const item of cs16Field())if(!cs16BrokenProps.has(item.id)&&Math.hypot(item.x-pos[0],item.z-pos[2])<6){cs16BrokenProps.add(item.id);ids.push(item.id);}if(ids.length)io.emit('cs16_props',{map:cs16.map,ids});
 }});
 setInterval(()=>{if(cs16.gm==='cq'&&cs16.phase==='live'){cs16Conquest.tick();cs16Broadcast();}},1000);
+const cs16Front=require('./cs16-front-server').create({state:cs16,grid:()=>CS16_GRID[cs16.map],
+  emit:(name,d)=>{
+    if(name==='cs16_front_break'){const gone=new Set(d.ids),grid=CS16_GRID[cs16.map],ids=[];
+      for(const v of cs16Field())if(!cs16BrokenProps.has(v.id)&&gone.has(Math.floor(v.z/4)*grid[0].length+Math.floor(v.x/4))){cs16BrokenProps.add(v.id);ids.push(v.id);}
+      if(ids.length)io.to('cs16-front').emit('cs16_props',{map:cs16.map,ids});}
+    io.to('cs16-front').emit(name,d);
+  },frame:(name,d)=>io.to('cs16-front').volatile.emit(name,d),
+  hitHuman:(by,p,n)=>{if(p.alive&&p.team!==by.team)cs16ApplyHit(by,p,'army',false,'body',0,false,n);},
+  guided:(p,kind,o,dir,now)=>{if(kind==='ai'){const lock=cs16Missiles.seek(p,kind,dir,now);if(lock.name&&lock.progress<1)return false;}return cs16Missiles.fire(p,kind,o,dir,now);},
+  radial:(by,pos)=>cs16VehBoom(by,pos,'tankgun',false),finish:cs16EndMatch,wipe:cs16CheckWipe,
+  credit:(by,u)=>{by.kills++;by.money=Math.min(16000,(by.money||0)+350);cs16StatAdd(by.nick,'kill');
+    if(cs16.gm==='cq')cs16Conquest.killed(by,u,Date.now(),'army');
+    else if(cs16.gm==='gg')cs16OnKill(by,u,by.weapon);
+    io.to('cs16-front').emit('cs16_front_kill',{by:by.nick,kind:u.kind});cs16Broadcast();},
+  respawn:(p,pos,now)=>{p.alive=true;p.hp=100;p.cqRespawnAt=0;p.cqProtectedUntil=now+1800;
+    CS16Classes.apply(p);p.lx=p.bx=pos[0];p.ly=pos[1];p.lz=p.bz=pos[2];
+    const sid=[...cs16.players].find(([,v])=>v===p)?.[0];if(sid)cs16Personal(sid);
+    io.to('cs16-front').emit('cs16_cq_respawn',{nick:p.nick,pos,weapon:p.weapon,armor:p.armor,classId:p.classId});cs16Broadcast();}
+});
+const cs16Missiles=require('./cs16-missiles').create({state:cs16,grid:()=>CS16_GRID[cs16.map],army:cs16Front.units,
+  emit:(n,d)=>io.to('cs16-front').emit(n,d),frame:(n,d)=>io.to('cs16-front').volatile.emit(n,d),
+  impact:(p,pos,kind)=>{if(cs16.phase!=='live')return;io.to('cs16-front').emit('cs16_rpg_boom',{pos});cs16VehBoom(p,pos,kind==='rpg'?'rpg':'tankgun');}
+});
+setInterval(()=>cs16Missiles.tick(),50).unref();
+setInterval(()=>{if(cs16.phase==='live')cs16Front.tick();},200).unref();
 function cs16HostId() { return cs16.players.keys().next().value || null; }
 function cs16TeamCount(team) { let n = 0; for (const p of cs16.players.values()) if (p.team === team) n++; return n; }
-function cs16Alive(team) { let n = 0; for (const p of cs16.players.values()) if (p.team === team && p.alive) n++; return n; }
+function cs16Alive(team) { let n = cs16Front.alive(team); for (const p of cs16.players.values()) if (p.team === team && p.alive) n++; return n; }
 function cs16ClearTimers() { for (const t of cs16.timers) clearTimeout(t); cs16.timers = []; if (cs16.roundTimeout) { clearTimeout(cs16.roundTimeout); cs16.roundTimeout = null; } }
 function cs16Later(fn, ms) { cs16.timers.push(setTimeout(fn, ms)); }
 
@@ -4612,7 +4638,7 @@ const cs16Magic=require('./cs16-magic-server').create({state:cs16,grid:()=>CS16_
 function cs16State() {
   return {
     phase: cs16.phase, mode: cs16.mode, round: cs16.round,
-    map: cs16.map, gm: cs16.gm, // 3.24.0
+    map: cs16.map, gm: cs16.gm, army:!!cs16.army, // 3.24.0
     scores: cs16.scores, winner: cs16.winner,cq:cs16.gm==='cq'?cs16.cq:null,
     host: (cs16HostId() && cs16.players.get(cs16HostId()) || {}).nick || null,
     freezeEnds: cs16.freezeEnds, roundEnds: cs16.roundEnds, buyUntil: cs16.buyUntil,
@@ -4627,11 +4653,11 @@ function cs16State() {
 function cs16Broadcast() { io.emit('cs16_state', cs16State()); }
 function cs16Personal(sid) { const p = cs16.players.get(sid); if (p) io.to(sid).emit('cs16_you', { money: p.money, hp: p.hp, armor: p.armor, weapon: p.weapon, team: p.team, alive: p.alive, kit: p.kit, respawnAt:p.cqRespawnAt||0,spawnFlag:p.cqSpawn??null }); }
 
-function cs16Spawn(team,index,total){index=Math.max(0,Number.isFinite(index)?Math.floor(index):0)%10;const pos=team==='ct'?[(57+index%3)*4,0,(9+Math.floor(index/3))*4]:[(cs16.map==='inferno'?51:48)*4+(index%5)*4,0,((cs16.map==='inferno'?105:108)+Math.floor(index/5))*4];const safe=require('./cs16-props').safeSpawn(CS16_GRID[cs16.map]||CS16_GRID.dust2,pos);return [safe[0],1.6+CS16Terrain.walkHeight(CS16_GRID[cs16.map],safe[0],safe[2]),safe[2]];}
+function cs16Spawn(team,index,total){if(cs16.gm==='assault'){const pos=cs16Front.spawn(team,index);pos[1]+=1.6;return pos;}index=Math.max(0,Number.isFinite(index)?Math.floor(index):0)%10;const pos=team==='ct'?[(57+index%3)*4,0,(9+Math.floor(index/3))*4]:[(cs16.map==='inferno'?51:48)*4+(index%5)*4,0,((cs16.map==='inferno'?105:108)+Math.floor(index/5))*4];const safe=require('./cs16-props').safeSpawn(CS16_GRID[cs16.map]||CS16_GRID.dust2,pos);return [safe[0],1.6+CS16Terrain.walkHeight(CS16_GRID[cs16.map],safe[0],safe[2]),safe[2]];}
 
 // 3.24.0: единый подсчёт урона и убийств (игроки и боты)
 function cs16ApplyHit(attacker, target, weapon, head, zone, dist, heavy, rawDamage) {
-  if(cs16.gm==='cq'&&target.cqProtectedUntil>Date.now())return false;
+  if((cs16.gm==='cq'||cs16.gm==='assault')&&target.cqProtectedUntil>Date.now())return false;
   const result = Number.isFinite(rawDamage)?{damage:rawDamage,armorUsed:0}:CS16Combat.damage(weapon,head?'head':zone,dist,target.armor,heavy);
   if (!result.damage) return;
   const dmg = Math.min(target.hp,cs16Magic.absorb(target,result.damage));
@@ -4658,6 +4684,8 @@ function cs16ApplyHit(attacker, target, weapon, head, zone, dist, heavy, rawDama
 }
 // 3.24.0: Gun-Game — лестница оружий и респаун; классика — проверка вайпа уже внутри ApplyHit
 function cs16OnKill(attacker, target, weapon) {
+  cs16Front.lost(target);if(cs16.gm==='assault')return;
+  if(attacker?.army&&cs16.gm==='gg')attacker=null;
   if(cs16.gm==='cq'){cs16Conquest.killed(attacker,target,Date.now(),weapon);return;}
   if (cs16.gm !== 'gg') return;
   if (attacker) {
@@ -4672,6 +4700,7 @@ function cs16OnKill(attacker, target, weapon) {
       return;
     }
   }
+  if(target.army)return;
   // респаун жертвы через 3.5 сек
   setTimeout(() => {
     if (cs16.phase !== 'live' || target.alive) return;
@@ -4685,15 +4714,16 @@ function cs16OnKill(attacker, target, weapon) {
 }
 
 // 3.31.0: AoE пушки танка и ракет вертолёта — урон по врагам в радиусе 6м (по своим нельзя)
-function cs16VehBoom(attacker, pos, weapon) {
+function cs16VehBoom(attacker, pos, weapon, breakWorld=true) {
+  if(breakWorld)cs16Front.blast(attacker,pos,weapon==='rpg'?5.5:weapon==='artillery'?7:4);
   for(const target of cs16.players.values()){
     if(!target.veh||target===attacker||(cs16.gm!=='gg'&&target.team===attacker.team))continue;
     const vp=target.veh.pos;if(!vp||Math.hypot(vp[0]-pos[0],vp[1]+1-pos[1],vp[2]-pos[2])>6)continue;
     target.veh.hp-=weapon==='rpg'?350:120;if(target.veh.hp<=0)cs16VehDestroy(target,attacker,vp);else io.emit('cs16_vehhit',{target:target.nick,hp:target.veh.hp,max:target.veh.max,kind:target.veh.kind});
   }
   for (const target of cs16.players.values()) {
-    if (!target.alive || !target.team || target === attacker) continue;
-    if(cs16.gm==='cq'&&target.cqProtectedUntil>Date.now())continue;
+    if (!target.alive || target.frontSeat!=null || !target.team || target === attacker) continue;
+    if((cs16.gm==='cq'||cs16.gm==='assault')&&target.cqProtectedUntil>Date.now())continue;
     if (cs16.gm !== 'gg' && target.team === attacker.team) continue;
     const tx = target.bot ? target.bx : target.lx, tz = target.bot ? target.bz : target.lz;
     if (tx == null) continue;
@@ -4855,12 +4885,13 @@ function cs16StartRound() {
   cs16.freezeEnds = now + 6000;
   cs16.roundEnds = now + 6000 + 115000;
   cs16.buyUntil = now + 6000 + 15000;
-  if(cs16.gm==='cq')cs16Conquest.start(now);
+  cs16Missiles.clear();cs16Front.reset();cs16Field();if(cs16.gm==='cq')cs16Conquest.start(now);
   let ti = 0, ci = 0;
   for (const p of cs16.players.values()) {
     p.alive = true; p.hp = 100; p.vehSeat=null; p.veh = null; // 3.32.0: техника не переживает раунд
     if (cs16.gm === 'gg') { p.ggIdx = 0; p.weapon = CS16_GG_LADDER[0]; }
     else if (!p.weapon) p.weapon = p.team === 't' ? 'glock' : 'usp';
+    p.frontSeat=null;p.frontChargeAt=0;p.cqRespawnAt=0;if(cs16.gm==='assault'){CS16Classes.apply(p);p.money=5000;p.cqProtectedUntil=cs16.freezeEnds+1800;}
     if(cs16.gm!=='cq')p.money = Math.min(16000, p.money + 500); // 3.15.5: доход каждый раунд
   }
   cs16Broadcast();
@@ -4879,6 +4910,7 @@ function cs16StartRound() {
 }
 
 function cs16EndRound(winner, reason) {
+  if(cs16.gm==='assault'){cs16EndMatch(winner);return;}
   if(cs16.gm==='cq'){cs16EndMatch(cs16.scores.t===cs16.scores.ct?'draw':cs16.scores.t>cs16.scores.ct?'t':'ct');return;}
   if (cs16.phase !== 'live' && cs16.phase !== 'freeze') return;
   cs16ClearTimers();
@@ -4937,14 +4969,14 @@ function cs16EndMatch(winner) {
   });
   cs16Later(() => {
     if(cs16.gm==='cq'&&cs16TeamCount('t')&&cs16TeamCount('ct')){cs16.round=0;cs16StartRound();return;}
-    cs16.phase = 'lobby'; cs16.round = 0; cs16.scores = { t: 0, ct: 0 }; cs16.winner = null; cs16.swapped = false;
+    cs16Front.clear();cs16.phase = 'lobby'; cs16.round = 0; cs16.scores = { t: 0, ct: 0 }; cs16.winner = null; cs16.swapped = false;
     for (const p of cs16.players.values()) { p.team = null; p.money = 800; p.weapon = null; p.rpgAmmo = 0; p.hp = 100; p.alive = true; p.ggIdx = 0; p.veh = null; p.vehSeat=null; }
     cs16Broadcast();
   }, 12000);
 }
 
 function cs16CheckWipe() {
-  if (cs16.gm === 'gg'||cs16.gm==='cq') return; // 3.24.0: в Gun-Game вайпа нет — все респаунятся
+  if (['gg','cq','assault'].includes(cs16.gm)) return; // 3.24.0: в Gun-Game вайпа нет — все респаунятся
   if (cs16.phase !== 'live' && cs16.phase !== 'freeze') return;
   if (cs16.bomb) return; // после закладки раунд решает бомба (взрыв или обезвреживание)
   const tAlive = cs16Alive('t'), ctAlive = cs16Alive('ct');
@@ -4954,9 +4986,11 @@ function cs16CheckWipe() {
 }
 
 function cs16Remove(socket) {
+  socket.leave('cs16-front');
   const p = cs16.players.get(socket.id);
   if (!p) return;
-  cs16.players.delete(socket.id);
+  if(p.frontSeat!=null)cs16Front.leave(p);cs16.players.delete(socket.id);
+  if(![...cs16.players.values()].some(u=>!u.bot)){cs16.players.clear();cs16Front.clear();cs16.army=false;}
   io.emit('cs16_leave', { nick: p.nick });
   if (cs16.players.size === 0) { cs16ClearTimers(); cs16.phase = 'lobby'; cs16.round = 0; cs16.scores = { t: 0, ct: 0 }; cs16.mode = 5; cs16.winner = null; return; }
   if (cs16.phase !== 'lobby' && cs16.phase !== 'matchend') cs16CheckWipe();
@@ -4969,17 +5003,27 @@ io.on('connection', (socket) => {
     if (!nick || cs16.players.has(socket.id)) return;
     // Тот же ник с другого сокета — выкидываем старую сессию
     for (const [id, p] of cs16.players.entries()) {
-      if (p.nick.toLowerCase() === nick.toLowerCase() && id !== socket.id) cs16.players.delete(id);
+      if (p.nick.toLowerCase() === nick.toLowerCase() && id !== socket.id){if(p.frontSeat!=null)cs16Front.leave(p);io.sockets.sockets.get(id)?.leave('cs16-front');cs16.players.delete(id);}
     }
 
     cs16.players.set(socket.id, { nick, team: null, money: 800, hp: 100, armor: 0, alive: cs16.phase==='lobby', kills: 0, deaths: 0, weapon: null, kit: false, lossStreak: 0, joinedAt: Date.now() });
-    cs16Personal(socket.id);
+    socket.join('cs16-front');cs16Personal(socket.id);
     cs16Broadcast();
     socket.emit('cs16_environment',fieldEnvironment.snapshot());
-    socket.emit('cs16_props',{map:cs16.map,ids:[...cs16BrokenProps],snapshot:true});
+    socket.emit('cs16_props',{map:cs16.map,ids:[...cs16BrokenProps],snapshot:true});socket.emit('cs16_front_reset',cs16Front.snapshot());
   });
 
   fieldEnvironment.attach(socket);
+  socket.on('cs16_army',enabled=>{if(typeof enabled!=='boolean'||socket.id!==cs16HostId()||cs16.phase!=='lobby')return;
+    cs16.army=enabled;if(enabled)for(const [id,p]of cs16.players)if(p.bot){cs16.players.delete(id);io.emit('cs16_leave',{nick:p.nick});}cs16Broadcast();});
+  socket.on('cs16_front_charge',d=>{const error=cs16Front.requestCharge(cs16.players.get(socket.id),d?.dir);if(error)socket.emit('cs16_err',error);});
+  socket.on('cs16_front_board',kind=>{const error=cs16Front.board(cs16.players.get(socket.id),kind);if(error)socket.emit('cs16_err',error);});
+  socket.on('cs16_front_controls',d=>cs16Front.control(cs16.players.get(socket.id),d));
+  socket.on('cs16_seek',d=>{const p=cs16.players.get(socket.id),now=Date.now();if(!p||now<(p.seekAt||0))return;p.seekAt=now+85;
+    const kind=['rpg','vehicle','front'].includes(d?.kind)?d.kind:null;
+    socket.emit('cs16_lock',{...cs16Missiles.seek(p,kind,d?.dir,now),kind});
+  });
+  socket.on('cs16_vehicle_rocket',d=>{const p=cs16.players.get(socket.id);if(p)cs16Missiles.vehicle(p,d);});
   socket.on('cs16_character',id=>{const p=cs16.players.get(socket.id);if(!p||!CS16Characters.valid(id))return;if(cs16.phase!=='lobby'&&p.team&&p.alive){socket.emit('cs16_err','Сменить внешность можно в лобби или после гибели');return;}const now=Date.now();if(p.characterChangedAt&&now-p.characterChangedAt<250)return;p.characterChangedAt=now;p.characterId=id;socket.emit('cs16_character_selected',{id});cs16Broadcast();});
   socket.on('cs16_class',id=>{const p=cs16.players.get(socket.id);if(!p||!CS16Classes.valid(id))return;p.nextClass=id;socket.emit('cs16_class_selected',{id});cs16Broadcast();});
   socket.on('cs16_pet',id=>{const p=cs16.players.get(socket.id);if(!p||!CS16Magic.petValid(id))return;if(cs16.phase!=='lobby'&&p.team&&p.alive){socket.emit('cs16_err','Питомец выбирается в лобби или после гибели');return;}if(Date.now()-(p.petChangedAt||0)<250)return;p.petChangedAt=Date.now();p.petId=id;socket.emit('cs16_pet_selected',{id});cs16Broadcast();});
@@ -4988,6 +5032,7 @@ io.on('connection', (socket) => {
   socket.on('cs16_team', (team) => {
     const p = cs16.players.get(socket.id);
     if (!p) return;
+    if(p.frontSeat!=null)cs16Front.leave(p);
     if (team !== 't' && team !== 'ct') { p.team = null; cs16Broadcast(); return; }
     if (cs16TeamCount(team) >= cs16.mode) { io.to(socket.id).emit('cs16_err', 'Команда заполнена'); return; }
     // 3.15.9: можно вступить даже в уже начатый матч — игрок войдёт в игру со следующего раунда
@@ -5017,7 +5062,7 @@ io.on('connection', (socket) => {
   socket.on('cs16_start', () => {
     if (socket.id !== cs16HostId() || cs16.phase !== 'lobby') return;
     // 3.16.0: матч можно начать с любым составом — 2v1, 3v2 и т.д.
-    if (cs16TeamCount('t') < 1 || cs16TeamCount('ct') < 1) {
+    if (cs16.army?![...cs16.players.values()].some(p=>p.team&&!p.bot):(cs16TeamCount('t') < 1 || cs16TeamCount('ct') < 1)) {
       io.to(socket.id).emit('cs16_err', 'Нужен хотя бы 1 игрок в каждой команде');
       return;
     }
@@ -5029,18 +5074,18 @@ io.on('connection', (socket) => {
   // 3.24.0: выбор карты / режима / боты (только хост, только в лобби)
   socket.on('cs16_map', (m) => {
     if (socket.id !== cs16HostId() || cs16.phase !== 'lobby') return;
-    if (m !== 'dust2' && m !== 'inferno') return;
+    if (!['dust2','inferno','frontline'].includes(m)) return;
     cs16.map = m;
     cs16Broadcast();
   });
   socket.on('cs16_gm', (g) => {
     if (socket.id !== cs16HostId() || cs16.phase !== 'lobby') return;
-    if (!['classic','gg','cq'].includes(g)) return;
+    if (!['classic','gg','cq','assault'].includes(g)) return;
     cs16.gm = g;
     cs16Broadcast();
   });
   socket.on('cs16_botadd', () => {
-    if (socket.id !== cs16HostId()) return;
+    if (socket.id !== cs16HostId()||cs16.army) return;
     if (cs16TeamCount('t') >= cs16.mode || cs16TeamCount('ct') >= cs16.mode) { io.to(socket.id).emit('cs16_err', 'Команды заполнены — увеличь размер'); return; }
     cs16BotAdd(socket);
   });
@@ -5053,6 +5098,7 @@ io.on('connection', (socket) => {
   socket.on('cs16_pos', (d) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || !d) return;
+    if(p.frontSeat!=null)return;
     if(!Array.isArray(d.pos)||d.pos.length!==3||!d.pos.every(Number.isFinite))return;if (d.pos) { p.lx = d.pos[0]; p.ly=d.pos[1]; p.lz = d.pos[2]; }
     // 3.24.2: скин экипированного оружия уходит другим игрокам (только известные id)
     const skinId = (d.skin && CS16_SKINS[d.skin]) ? d.skin : '';
@@ -5066,12 +5112,13 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('cs16_step', { nick: p.nick, pos: d.pos, surf: d.surf });
   });
 
-  socket.on('cs16_rpg',d=>{const p=cs16.players.get(socket.id);if(cs16.phase!=='live'||!p||!(p.rpgAmmo>0))return;const shot=CS16RPG.shot(CS16_GRID[cs16.map]||CS16_GRID.dust2,cs16.map,p,d,cs16.players.values(),CS16Combat);if(!shot)return;const map=cs16.map,round=cs16.round;io.emit('cs16_rocket',{nick:p.nick,...shot});setTimeout(()=>{if(cs16.phase!=='live'||cs16.map!==map||cs16.round!==round)return;io.emit('cs16_rpg_boom',{pos:shot.pos});cs16VehBoom(p,shot.pos,'rpg');},shot.duration);});
+  socket.on('cs16_rpg',d=>{const p=cs16.players.get(socket.id);if(cs16.phase!=='live'||!p||p.frontSeat!=null||!(p.rpgAmmo>0)||!cs16Missiles.hasRoom())return;const shot=CS16RPG.shot(CS16_GRID[cs16.map]||CS16_GRID.dust2,cs16.map,p,d,cs16.players.values(),CS16Combat,Date.now(),cs16Front.rayUnit);if(!shot)return;cs16Missiles.fire(p,'rpg',shot.origin,shot.dir);});
   socket.on('cs16_shoot', (d) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || cs16.phase !== 'live' || !d) return;
     if(['mgveh','tankgun'].includes(d.weapon)&&!CS16Vehicles.active(cs16.players,p))return;
     if (!CS16Combat.weapons[d.weapon] || !Array.isArray(d.origin) || !Array.isArray(d.dir) || d.origin.length!==3 || d.dir.length!==3 || ![...d.origin,...d.dir].every(Number.isFinite)) return;
+    if(p.frontSeat!=null)return;cs16Front.shoot(p,d);
     fieldEnvironment.shoot(p,d);
     socket.broadcast.emit('cs16_shoot', { nick: p.nick, origin: d.origin, dir: d.dir, weapon: d.weapon, distance:Number.isFinite(d.distance)?Math.max(0,Math.min(200,d.distance)):60 });
   });
@@ -5083,7 +5130,9 @@ io.on('connection', (socket) => {
     if (!target || !target.alive) return;
     if (cs16.gm !== 'gg' && target.team === p.team) return; // фф выключен (в GG — все против всех)
     if(['mgveh','tankgun'].includes(d.weapon)&&!CS16Vehicles.active(cs16.players,p))return;
-    const origin=[p.lx,p.ly+1.5,p.lz],end=[target.bot?target.bx:target.lx,(target.ly||0)+1,target.bot?target.bz:target.lz];if([...origin,...end].every(Number.isFinite)){const dist=Math.hypot(...end.map((v,i)=>v-origin[i]));if(dist>.01&&CS16Buildings.ray(CS16_GRID[cs16.map],cs16.map,origin,end.map((v,i)=>(v-origin[i])/dist),Math.max(0,dist-.4))!==null)return;}
+    if(p.frontSeat!=null||target.frontSeat!=null)return;
+    const origin=[p.lx,p.ly+1.5,p.lz],end=[target.bot?target.bx:target.lx,(target.ly||0)+1,target.bot?target.bz:target.lz];
+    if([...origin,...end].every(Number.isFinite)){const dist=Math.hypot(...end.map((v,i)=>v-origin[i]));if(dist>.01){const dir=end.map((v,i)=>(v-origin[i])/dist),limit=Math.max(0,dist-.4);if(cs16Front.rayUnit(origin,dir,limit,p.team)||CS16Buildings.ray(CS16_GRID[cs16.map],cs16.map,origin,dir,limit)!==null)return;}}
     const weapon = CS16Combat.weapons[d.weapon], distance = Number(d.dist);
     if (!weapon || !Number.isFinite(distance) || distance<0 || distance>200 || (d.weapon==='knife'&&distance>2.85)) return;
     const interval = d.weapon==='knife'?(d.heavy?900:750):(d.weapon==='glock'||d.weapon==='famas'?75:60000/weapon.rpm);
@@ -5097,6 +5146,7 @@ io.on('connection', (socket) => {
   socket.on('cs16_nade', (d) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || cs16.phase !== 'live' || !d) return;
+    if(d.kind==='he'&&Array.isArray(d.pos)&&d.pos.length===3&&d.pos.every(Number.isFinite)&&Math.hypot(d.pos[0]-p.lx,d.pos[1]-p.ly-1.5,d.pos[2]-p.lz)<3&&Date.now()-(p.lastFrontHE||0)>1300){p.lastFrontHE=Date.now();p.frontHE={origin:d.pos.slice(),time:p.lastFrontHE};}
     socket.broadcast.emit('cs16_nade', { nick: p.nick, pos: d.pos, vel: d.vel, kind: d.kind });
   });
 
@@ -5104,13 +5154,14 @@ io.on('connection', (socket) => {
     const p = cs16.players.get(socket.id);
     if (!p || cs16.phase !== 'live' || !d || !d.pos) return;
     const kind = d.kind === 'flash' ? 'flash' : d.kind === 'smoke' ? 'smoke' : 'he';
+    if(kind==='he'&&p.frontHE&&Date.now()-p.frontHE.time<=6500&&Array.isArray(d.pos)&&d.pos.length===3&&d.pos.every(Number.isFinite)&&Math.hypot(...d.pos.map((v,i)=>v-p.frontHE.origin[i]))<55){p.frontHE=null;cs16Front.blast(p,d.pos,3.3);}
     io.emit('cs16_boom', { pos: d.pos, kind }); // HE-урон считают сами клиенты и шлют cs16_boomdmg
   });
 
   // Клиент сам сообщает, что его зацепило осколками (доверяем, как в остальных играх)
   socket.on('cs16_boomdmg', (dmg) => {
     const p = cs16.players.get(socket.id);
-    if (!p || !p.alive || cs16.phase !== 'live') return;
+    if (!p || !p.alive || p.frontSeat!=null || cs16.phase !== 'live') return;
     dmg = Math.max(0, Math.min(98, parseInt(dmg) || 0));
     if (p.armor > 0) dmg = Math.round(dmg * 0.5);
     dmg = Math.min(p.hp, cs16Magic.absorb(p,dmg));
@@ -5121,7 +5172,7 @@ io.on('connection', (socket) => {
       p.alive = false; p.deaths += 1; p.armor = 0; p.weapon = null; p.rpgAmmo = 0;
       cs16StatAdd(p.nick, 'death');
       io.emit('cs16_death', { nick: p.nick, killer: null, weapon: 'hegrenade', head: false });
-      if (cs16.gm === 'gg'||cs16.gm==='cq') cs16OnKill(null, p, 'hegrenade');
+      if (['gg','cq','assault'].includes(cs16.gm)) cs16OnKill(null, p, 'hegrenade');
       cs16Broadcast();
       cs16CheckWipe();
     }
@@ -5185,6 +5236,8 @@ io.on('connection', (socket) => {
     const cx = parseInt(d.x), cy = parseInt(d.y);
     if (!Number.isFinite(cx) || !Number.isFinite(cy) || cy < 0 || cx < 0 || cy >= grid.length || cx >= grid[0].length) return;
     if (grid[cy][cx] !== 2 && grid[cy][cx] !== 3) return; // только ящики (D/C)
+    if(!CS16Vehicles.active(cs16.players,p)||p.veh.kind!=='tank'||!p.veh.pos||Math.hypot(p.veh.pos[0]-cx*4-2,p.veh.pos[2]-cy*4-2)>7)return;
+    cs16Front.demolish([cx*4+2,0,cy*4+2],0,[cy*grid[0].length+cx]);
     socket.broadcast.emit('cs16_vehcrate', { x: cx, y: cy });
   });
 
@@ -5222,6 +5275,7 @@ io.on('connection', (socket) => {
       if (cs16.phase !== 'live' || !cs16.bomb) return;
       const b = cs16.bomb;
       cs16.bomb = null;
+      if(Array.isArray(b.pos))cs16Front.demolish(b.pos,12);
       io.emit('cs16_bomb_exploded', { site: b.site, pos: b.pos });
       cs16EndRound('t', 'Бомба взорвалась');
     }, 40000);
@@ -5255,7 +5309,7 @@ io.on('connection', (socket) => {
     if (!p || p.nick.toLowerCase() !== 'fifflaren') return;
     const entry = [...cs16.players.entries()].find(([, x]) => x.nick.toLowerCase() === String(nick || '').toLowerCase());
     if (!entry || entry[0] === socket.id) return;
-    const victim = entry[1];
+    const victim = entry[1];if(victim.frontSeat!=null)cs16Front.leave(victim);io.sockets.sockets.get(entry[0])?.leave('cs16-front');
     cs16.players.delete(entry[0]);
     io.to(entry[0]).emit('cs16_kicked', { by: 'fifflaren' });
     io.emit('cs16_leave', { nick: victim.nick });
@@ -5279,7 +5333,7 @@ io.on('connection', (socket) => {
       return;
     }
     if (cs16.phase !== 'live' && cs16.phase !== 'freeze') return;
-    p.team = target; p.weapon = null; p.rpgAmmo = 0;
+    if(p.frontSeat!=null)cs16Front.leave(p);p.team = target; p.weapon = null; p.rpgAmmo = 0;
     if (p.alive) {
       p.alive = false;
       io.emit('cs16_death', { nick: p.nick, killer: null, weapon: 'swap', head: false });
@@ -5313,7 +5367,7 @@ io.on('connection', (socket) => {
   socket.on('cs16_tomenu', () => {
     if (!cs16IsBoss(socket)) return;
     cs16ClearTimers();
-    cs16.phase = 'lobby'; cs16.round = 0; cs16.scores = { t: 0, ct: 0 }; cs16.winner = null; cs16.bomb = null;
+    cs16Front.clear();cs16.phase = 'lobby'; cs16.round = 0; cs16.scores = { t: 0, ct: 0 }; cs16.winner = null; cs16.bomb = null;
     for (const p of cs16.players.values()) { p.team = null; p.money = 800; p.hp = 100; p.armor = 0; p.alive = true; p.weapon = null; p.rpgAmmo = 0; p.kit = false; }
     cs16Broadcast();
   });
@@ -5331,6 +5385,7 @@ setInterval(() => {
     if (cs16.bomb && now >= cs16.bomb.explodesAt) {
       const b = cs16.bomb;
       cs16.bomb = null;
+      if(Array.isArray(b.pos))cs16Front.demolish(b.pos,12);
       io.emit('cs16_bomb_exploded', { site: b.site, pos: b.pos });
       cs16EndRound('t', 'Бомба взорвалась');
     } else if ((cs16.phase === 'live' || cs16.phase === 'freeze') && cs16.roundEnds && now > cs16.roundEnds + 20000) {

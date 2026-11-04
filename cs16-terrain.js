@@ -60,7 +60,9 @@
   function patch(grid, x, z) {
     return layout(grid).find((p) => Math.abs(x - p.x) <= p.r && Math.abs(z - p.z) <= p.r);
   }
-  function height(grid, x, z) {
+  function height(grid,x,z){return baseHeight(grid,x,z)-(grid.frontDamage?.original.size?Front.depth(grid,x,z):0);}
+  const Front=typeof window!=='undefined'?window.CS16Front:require('./cs16-front');
+  function baseHeight(grid, x, z) {
     const p = patch(grid, x, z);
     if (!p) return 0;
     const r = Math.hypot((x - p.x) / p.r, (z - p.z) / p.r);
@@ -74,6 +76,13 @@
   }
   function ray(grid, o, d, maxT) {
     let nearest = null;
+    if(grid.frontDamage?.original.size&&d[1]<-.001){
+      for(let t=Math.max(0,(o[1]-5)/-d[1]);t<=maxT;t+=.35){
+        const x=o[0]+d[0]*t,z=o[2]+d[2]*t;
+        if(Front.ruined(grid,x,z)&&o[1]+d[1]*t<=height(grid,x,z)){nearest=t;break;}
+        if(o[1]+d[1]*t< -12)break;
+      }
+    }
     for (const p of layout(grid)) {
       let lo = 0,
         hi = maxT;
@@ -141,7 +150,7 @@
   }
   function walkHeight(grid, x, z) {
     const p = patch(grid, x, z);
-    return p?.kind === 'gully' && Math.abs(x - p.x) <= 1.45 ? 0 : height(grid, x, z);
+    return !grid.frontDamage?.original.has(Math.floor(z/4)*grid[0].length+Math.floor(x/4))&&p?.kind === 'gully' && Math.abs(x - p.x) <= 1.45 ? 0 : height(grid, x, z);
   }
   return { layout, buildingSites, height, walkHeight, normal, patch, ray, bridges };
 });

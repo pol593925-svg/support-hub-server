@@ -9,6 +9,6 @@ test('map props are deterministic; destruction needs a nearby seated tank; dupli
 });
 test('late join receives map state before destroyed props snapshot',()=>{
  const source=fs.readFileSync(__dirname+'/server.js','utf8'),events=[];let join;
- vm.runInNewContext(source.slice(source.indexOf("  socket.on('cs16_join',"),source.indexOf("  fieldEnvironment.attach(socket);")),{socket:{id:'new',on:(n,f)=>{if(n==='cs16_join')join=f},emit:(n,d)=>events.push([n,d])},cs16:{map:'inferno',players:new Map()},fieldEnvironment:{snapshot:()=>({map:'inferno'})},cs16BrokenProps:new Set([4,8]),cs16Personal:()=>{},cs16Broadcast:()=>events.push(['cs16_state'])});
+ vm.runInNewContext(source.slice(source.indexOf("  socket.on('cs16_join',"),source.indexOf("  fieldEnvironment.attach(socket);")),{cs16Front:{snapshot:()=>({map:'inferno',ids:[]})},socket:{id:'new',join(){},on:(n,f)=>{if(n==='cs16_join')join=f},emit:(n,d)=>events.push([n,d])},cs16:{map:'inferno',players:new Map()},fieldEnvironment:{snapshot:()=>({map:'inferno'})},cs16BrokenProps:new Set([4,8]),cs16Personal:()=>{},cs16Broadcast:()=>events.push(['cs16_state'])});
  join('newcomer');assert.equal(events[0][0],'cs16_state');assert.equal(events[1][0],'cs16_environment');assert.equal(events[2][0],'cs16_props');assert.deepEqual(Array.from(events[2][1].ids),[4,8]);
 });
