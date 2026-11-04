@@ -1,6 +1,6 @@
 'use strict';
 const express = require('express');
-const LIMIT = 12 * 1024 * 1024, MAX_TRACKS = 40;
+const media=require('./radio-media');
 const empty = () => ({queue:[], current:null, position:0, playing:false, anchor:0, rev:0});
 function live(station, now = Date.now()) {
   const {queue,playing} = station;
@@ -15,7 +15,6 @@ function change(station, command, now) {
   const s = {...station, ...live(station, now), anchor:now, queue:station.queue.slice()};
   const index = s.queue.findIndex(t => t.id === s.current);
   if(command.op === 'add') {
-    if(s.queue.length >= MAX_TRACKS) throw Error('Очередь заполнена. Удали трек перед загрузкой.');
     s.queue.push(command.track); if(!s.current)s.current=command.track.id;
   } else {
     if(index<0) throw Error('Очередь пуста.');
@@ -41,17 +40,14 @@ function change(station, command, now) {
   }
   s.rev++;return s;
 }
-function mediaType(bytes){
-  if(!Buffer.isBuffer(bytes)||bytes.length<12||bytes.length>LIMIT)return null;
-  if(bytes.toString('ascii',0,4)==='RIFF'&&bytes.toString('ascii',8,12)==='WAVE')return 'audio/wav';
-  if(bytes.toString('ascii',0,4)==='OggS')return 'audio/ogg';
-  if(bytes.toString('ascii',0,3)==='ID3'||(bytes[0]===255&&(bytes[1]&224)===224))return 'audio/mpeg';
-  return null;
-}
 function install({app,mongoose,authenticate}){
   const station=mongoose.connection.collection('radio_station'), audio=mongoose.connection.collection('radio_audio');
   const get=async()=>await station.findOne({_id:'live'})||{_id:'live',...empty()};
-  const send=(res,s)=>{const now=Date.now();res.set('Cache-Control','no-store').json({success:true,queue:s.queue,...live(s,now),rev:s.rev,now});};
+  const send=(res,s,compact=false)=>{
+    const now=Date.now(),at=live(s,now);
+    const payload=compact?{track:s.queue.find(t=>t.id===at.current)||null}:{queue:s.queue};
+    res.set('Cache-Control','no-store').json({success:true,...payload,...at,rev:s.rev,now});
+  };
   function guard(owner){return async(req,res,next)=>{try{
     const u=await authenticate(String(req.headers.authorization||'').replace(/^Bearer /,''));
     if(!u||(owner&&u.username.toLowerCase()!=='fifflaren'))return res.status(403).json({success:false,message:'Нет доступа к эфиру.'});
@@ -64,25 +60,31 @@ function install({app,mongoose,authenticate}){
     catch(e){if(e.code!==11000)throw e;}
     throw Object.assign(Error('Очередь уже изменилась. Повтори действие.'),{status:409});
   }
-  const error=(res,e)=>res.status(e.status||503).json({success:false,message:e.status?e.message:'Не удалось обновить эфир.'});
-  app.get('/api/radio/state',guard(false),async(req,res)=>{try{send(res,await get());}catch(e){error(res,e);}});
-  app.get('/api/radio/audio/:id',guard(false),async(req,res)=>{try{
-    if(!/^[a-f0-9]{24}$/.test(req.params.id))return res.sendStatus(404);
-    const track=await audio.findOne({_id:req.params.id});if(!track)return res.sendStatus(404);
-    res.type(track.mime).set({'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}).send(Buffer.isBuffer(track.data)?track.data:Buffer.from(track.data.buffer));
+  async function enqueue(track){
+    for(let i=0;i<8;i++){
+      const state=await get();if(state.queue.some(t=>t.id===track.id))return state;
+      try{return await commit(state,{op:'add',track});}catch(e){if(e.status!==409||i===7)throw e;}
+    }
+  }
+  const error=(res,e)=>res.status(e.status||503).json({success:false,message:e.status?e.message:/quota|space limit|out of.*space/i.test(e.message)?'Хранилище сервера заполнено.':'Сервис радио временно недоступен.'});
+  const storage=media.create({app,mongoose,guard,get,enqueue,send,error});
+  app.get('/api/radio/state',guard(false),async(req,res)=>{try{
+    const s=await get();send(res,s,req.query.compact==='1'||req.query.since===String(s.rev));
   }catch(e){error(res,e);}});
-  app.post('/api/radio/tracks',guard(true),express.raw({type:'application/octet-stream',limit:LIMIT}),async(req,res)=>{try{
-    const mime=mediaType(req.body), title=String(req.query.title||'').trim().slice(0,140),duration=Number(req.query.duration);
-    if(!mime||!title||!Number.isFinite(duration)||duration<1||duration>3600)return res.status(400).json({success:false,message:'Нужен трек MP3, OGG или WAV до 12 МБ, от секунды до часа.'});
-    const s=await get(), id=new mongoose.Types.ObjectId().toString();
+  // Compatibility upload for 3.50.0/1, which send one BSON-sized payload.
+  app.post('/api/radio/tracks',guard(true),express.raw({type:'application/octet-stream',limit:'12mb'}),async(req,res)=>{try{
+    const mime=media.mediaType(req.body), title=String(req.query.title||'').trim().slice(0,140),duration=Number(req.query.duration);
+    if(!mime||!title||!Number.isFinite(duration)||duration<=0)return res.status(400).json({success:false,message:'Нужен читаемый аудиофайл.'});
+    const id=new mongoose.Types.ObjectId().toString(),track={id,title,duration};
     await audio.insertOne({_id:id,mime,data:req.body});
-    try{send(res,await commit(s,{op:'add',track:{id,title,duration}}));}catch(e){if(e.status===400||e.status===409)await audio.deleteOne({_id:id});throw e;}
+    await storage.remember([track]);send(res,await enqueue(track));
   }catch(e){error(res,e);}});
   app.post('/api/radio/control',guard(true),async(req,res)=>{try{
     const s=await get(),cmd=req.body||{};
     if(s.rev!==cmd.rev)return res.status(409).json({success:false,message:'Эфир уже изменился. Повтори действие.'});
     if(cmd.op==='add')return res.sendStatus(400);
-    const next=await commit(s,cmd);if(cmd.op==='remove')await audio.deleteOne({_id:cmd.id});send(res,next);
+    if(cmd.op==='remove'){const item=s.queue.find(t=>t.id===cmd.id);if(item)await storage.retain(item);}
+    send(res,await commit(s,cmd));
   }catch(e){error(res,e);}});
 }
-module.exports={install,live,change,empty,mediaType};
+module.exports={install,live,change,empty,mediaType:media.mediaType};

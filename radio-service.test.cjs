@@ -10,10 +10,11 @@ test('broadcast follows a single clock across tracks, pauses and reorders',()=>{
   assert.equal(live(s,116000).current,'cc');cmd('previous',116000);assert.equal(s.current,'bb');
 });
 test('radio routes separate employee playback from owner controls and binary uploads',async()=>{
- let record=null,id=0;const tracks=new Map();
+ let record=null,id=0;const tracks=new Map(),catalog=new Map();
  const radio={findOne:async()=>record,updateOne:async(f,update)=>{if(record&&record.rev!==f.rev)return {matchedCount:0};record={_id:'live',...update.$set};return {matchedCount:1};}};
  const media={insertOne:async row=>tracks.set(row._id,row),deleteOne:async({_id})=>tracks.delete(_id),findOne:async({_id})=>tracks.get(_id)};
- const app=express();app.use(express.json());install({app,mongoose:{connection:{collection:n=>n==='radio_audio'?media:radio},Types:{ObjectId:class{toString(){return (++id).toString(16).padStart(24,'0');}}}},authenticate:async t=>['fifflaren','worker'].includes(t)?{username:t}:null});
+ const metadata={bulkWrite:async ops=>ops.forEach(({updateOne:o})=>catalog.set(o.filter._id,o.update.$setOnInsert)),findOne:async({_id})=>catalog.get(_id)};
+ const app=express();app.use(express.json());install({app,mongoose:{connection:{collection:n=>n==='radio_audio'?media:n==='radio_tracks'?metadata:radio},Types:{ObjectId:class{toString(){return (++id).toString(16).padStart(24,'0');}}}},authenticate:async t=>['fifflaren','worker'].includes(t)?{username:t}:null});
  const server=app.listen(0,'127.0.0.1');await new Promise(ok=>server.once('listening',ok));
  try{
  const url='http://127.0.0.1:'+server.address().port+'/api/radio/',wav=Buffer.from('RIFF0000WAVEtest');
