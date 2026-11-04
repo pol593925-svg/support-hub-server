@@ -77,6 +77,25 @@ test('purchased fast aircraft, one drop per match, crater and exclusive thermal 
  state.round=2;service.reset();assert(service.status().bombUsed);state.round=1;service.reset();assert(!service.status().bombUsed);
 });
 
+test('regular classic match buys and controls jets without adding AI or counting aircraft as survivors',()=>{
+ const {service,state,events,frames}=game('dust2',false,'classic');
+ const p={team:'ct',alive:true,nick:'Pilot',lx:200,ly:0,lz:200},wing={...p,nick:'Wing'},enemy={...p,team:'t',nick:'Enemy'};
+ for(const member of [p,wing,enemy])state.players.set(member.nick,member);
+ state.phase='freeze';assert.equal(service.units().length,0);
+ assert(service.board(p,'jet'));assert(service.buyJet({...p,alive:false}));assert(service.buyJet({...p,team:null}));
+ assert.equal(service.buyJet(p),null);assert.equal(p.frontSeat,99);assert.equal(service.alive('ct'),0);
+ assert(service.buyJet(wing));assert(service.buyJet(p));assert.equal(service.units().length,1);
+ assert.equal(service.buyJet(enemy),null);assert.equal(enemy.frontSeat,49);
+ const snapshot=service.snapshot();assert(!snapshot.army);assert.equal(snapshot.rows.filter(Boolean).length,2);assert(snapshot.rows[99][4]>0);
+ state.phase='live';service.control(p,{yaw:0,pitch:0,forward:1,side:0,lift:1,fire:false},3000);
+ service.tick(3100);assert(frames.at(-1).rows[99][2]<2000);
+ assert.equal(service.dropBomb(p,3200),null);assert(service.dropBomb(enemy,3201));
+ service.leave(p,true);assert.equal(service.snapshot().rows[99],undefined);
+ assert.equal(service.buyJet(wing),null);service.leave(wing);service.leave(enemy);
+ assert.deepEqual(events.filter(e=>e.n==='cs16_front_frame').at(-1).d.rows,[]);
+ service.tick(6300);assert(service.snapshot().crater);
+ assert.equal(service.units().length,0);service.reset();assert.deepEqual(service.snapshot().rows,[]);
+});
 test('pilot kills, respawns, reset and snapshot frame budget',()=>{
  const {service,state,frames}=game('frontline',true);const bot=service.units()[50];bot.hp=10;const p={team:'t',alive:true,nick:'Alpha',kills:0};state.players.set(1,p);
  service.blast(p,[bot.x,bot.y,bot.z],4,2700);assert(!bot.alive);service.tick(9250);assert(bot.alive);

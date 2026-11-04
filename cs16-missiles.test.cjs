@@ -27,8 +27,8 @@ test('purchased vehicles share the seeker; a two-rocket salvo consumes one coold
 });
 test('piloted and AI jet/heli launchers can lock independently; ground allies cannot be acquired',()=>{
  for(const kind of ['heli','jet']){
-   const g=Array.from({length:48},()=>Array(48).fill(0)),pilot={nick:'Pilot',alive:true,frontSeat:0,team:'t'};
-   const unit={id:0,rider:pilot,army:true,team:'t',kind,x:20,y:20,z:20,alive:true};
+   const g=Array.from({length:48},()=>Array(48).fill(0)),pilot={nick:'Pilot',alive:true,frontSeat:49,team:'t'};
+   const unit={id:49,rider:pilot,army:true,team:'t',kind,x:20,y:20,z:20,alive:true};
    const foe={id:1,army:true,team:'ct',kind:'heli',x:75,y:20,z:20,alive:true},started=[];
    const m=M.create({state:{phase:'live',map:'dust2',players:new Map([['p',pilot]])},grid:()=>g,army:()=>[unit,foe],emit:(n,d)=>{if(n==='cs16_missile_start')started.push(d);},frame(){},impact(){}});
    for(const [shooter,mode] of [[pilot,'front'],[unit,'ai']]){

@@ -21,7 +21,7 @@ function create({state,grid,army,emit,frame,impact}){
    if(!p?.alive||!p.team||state.phase!=='live')return null;
    let v;if(kind==='rpg'&&p.rpgAmmo>0&&!p.veh?.inside&&!p.vehSeat&&p.frontSeat==null)v=[p.lx,p.ly+1.5,p.lz];
    if(kind==='vehicle'&&Vehicles.active(state.players,p)){const owner=p.vehSeat?[...state.players.values()].find(u=>u.nick===p.vehSeat):p;if(owner?.veh?.pos)v=owner.veh.pos.map((n,i)=>n+(i===1?1.8:0));}
-   if(kind==='front'){const u=army()[p.frontSeat];if(u&&u.rider===p&&u.alive)v=[u.x,u.y+1.5,u.z];}
+   if(kind==='front'){const u=army().find(v=>v.id===p.frontSeat);if(u&&u.rider===p&&u.alive)v=[u.x,u.y+1.5,u.z];}
    if(kind==='ai'&&p.army&&p.kind!=='foot')v=[p.x,p.y+1.45,p.z];
    return valid(v)?v:null;
  }

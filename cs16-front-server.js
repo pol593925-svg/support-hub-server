@@ -9,12 +9,13 @@ function create({state,grid,emit,frame,hitHuman,respawn,finish,credit,wipe,radia
  const attacking=()=>state.gm==='assault';
  const humans=()=>[...state.players.values()].filter(p=>p.team);
  const xyz=p=>[p.army?p.x:p.bot?p.bx:p.lx,p.army?p.y:p.ly,p.army?p.z:p.bot?p.bz:p.lz];
- const alive=(team)=>units.filter(u=>u.team===team&&u.alive).length;
+ const alive=team=>state.army?units.filter(u=>u.team===team&&u.alive).length:0;
+ const seatUnit=p=>p?.frontSeat!=null?units.find(u=>u.id===p.frontSeat):null;
  function objective(){const s=sites[Math.min(stage,sites.length-1)];if(!s)return null;
    return {...s,y:F.ruined(g,s.x,s.z)?T.height(g,s.x,s.z):s.y};
  }
  function status(){return {epoch,map:state.map,stage,tickets,capture,bombUsed,gold,objective:attacking()?objective():null,army:!!state.army,counts:[alive('t'),alive('ct')]};}
- function pack(){return units.map(u=>[Math.round(u.x*10),Math.round(u.y*10),Math.round(u.z*10),Math.round(u.yaw*100),u.hp]);}
+ function pack(){const rows=[];for(const u of units)rows[u.id]=[Math.round(u.x*10),Math.round(u.y*10),Math.round(u.z*10),Math.round(u.yaw*100),u.hp];return rows;}
  function snapshot(){return {...status(),rows:pack(),crater:g?F.damage(g).crater:null,ids:g?[...F.damage(g).original.keys()]:[],pilots:units.filter(u=>u.rider).map(u=>[u.rider.nick,u.id])};}
  function spawn(team,index=0){
    const s=objective(),side=team==='t'?1:-1;
@@ -77,7 +78,7 @@ function create({state,grid,emit,frame,hitHuman,respawn,finish,credit,wipe,radia
    u.alive=false;u.respawn=now+(u.kind==='foot'?6500:18000);
    if(u.rider){const rider=u.rider;leave(rider);if(rider.alive)hitHuman(by,rider,90);}
    if(attacking()&&u.team==='t')tickets=Math.max(0,tickets-1);
-   if(!by.army)credit(by,u);
+   if(state.army&&!by.army)credit(by,u);
    if(u.kind!=='foot'){const pos=[u.x,u.y,u.z];demolish(pos,5);emit('cs16_front_fx',{pos,kind:'wreck'});}
    if(state.gm==='classic')wipe();
  }
@@ -188,8 +189,9 @@ function create({state,grid,emit,frame,hitHuman,respawn,finish,credit,wipe,radia
    if(target.army)damageArmy(target,15,u,now);else hitHuman(u,target,10);
  }
  function leave(p,bailout=false){
-   const u=units[p.frontSeat];if(!u||u.rider!==p){p.frontSeat=null;return;}
+   const u=seatUnit(p);if(!u||u.rider!==p){p.frontSeat=p.strikeJet=null;return;}
    u.rider=null;u.input=null;p.frontSeat=null;p.strikeJet=null;
+   if(!state.army){units=units.filter(v=>v!==u);emit('cs16_front_frame',{epoch,rows:pack(),shots:[]});}
    let pos=F.openCell(g,u.x,u.z)||[u.x,u.z];
    if(bailout){
      const enemies=[...units,...humans()].filter(e=>e.alive&&e.team!==p.team);
@@ -204,23 +206,33 @@ function create({state,grid,emit,frame,hitHuman,respawn,finish,credit,wipe,radia
    }
    p.lx=pos[0];p.lz=pos[1];p.ly=T.walkHeight(g,...pos);emit('cs16_front_seat',{nick:p.nick,id:null,pos:[p.lx,p.ly,p.lz]});
  }
- function board(p,kind){
+ function board(p,kind,purchase=false){
    if(!p)return 'Сначала вступи в команду.';if(p.frontSeat!=null){leave(p,true);return;}
-   if(!state.army||!p.alive||!p.team||p.veh?.inside||p.vehSeat||!['live','freeze'].includes(state.phase)||!['jet','heli'].includes(kind))return 'Авиация доступна живому бойцу при включённой армии.';
-   const u=units.find(v=>v.kind===kind&&v.team===p.team&&!v.rider);if(!u)return 'Борт уже занят союзником.';
+   if(!g||!p.alive||!['t','ct'].includes(p.team)||p.veh?.inside||p.vehSeat||!['live','freeze'].includes(state.phase)||!['jet','heli'].includes(kind))return 'Авиация доступна живому бойцу своей команды.';
+   if(!state.army&&(!purchase||kind!=='jet'||state.gm==='gg'))return 'Самолёт можно купить в магазине техники.';
+   let u=units.find(v=>v.kind===kind&&v.team===p.team);
+   if(!u&&!state.army){
+     if(!validPos([p.lx,p.ly,p.lz]))return 'Дождись появления на карте.';
+     const id=p.team==='t'?49:99;
+     u={id,kind,team:p.team,army:true,nick:'Самолёт · '+p.nick,hp:maxHP.jet,alive:true,x:p.lx,z:p.lz,
+       y:Math.max(p.ly,T.walkHeight(g,p.lx,p.lz))+28,yaw:p.team==='t'?0:Math.PI,nextShot:0,protectedUntil:0};
+     units.push(u);
+   }
+   if(!u||u.rider)return 'Борт уже занят союзником.';
    if(!u.alive){
      const now=Date.now();if(now<(u.scrambleUntil||0))return 'Борт восстанавливается · '+Math.max(1,Math.ceil((u.respawn-now)/1000))+' с';
      deploy(u,now);u.scrambleUntil=now+45000;
    }
    u.rider=p;p.frontSeat=u.id;u.y=Math.max(u.y,16);p.lx=u.x;p.ly=u.y;p.lz=u.z;emit('cs16_front_seat',{nick:p.nick,id:u.id,kind,yaw:u.yaw,pos:[u.x,u.y,u.z]});
+   if(!state.army)emit('cs16_front_frame',{epoch,rows:pack(),shots:[]});
  }
  function buyJet(p){
    if(!p||p.frontSeat!=null)return 'Сначала покинь текущий борт.';
-   const error=board(p,'jet');if(error)return error;
-   p.strikeJet=units[p.frontSeat];return null;
+   const error=board(p,'jet',true);if(error)return error;
+   p.strikeJet=seatUnit(p);return null;
  }
  function dropBomb(p,now=Date.now()){
-   const u=units[p?.frontSeat];
+   const u=seatUnit(p);
    if(!g||state.phase!=='live'||!p?.alive||!u||u!==p.strikeJet||u.rider!==p||u.kind!=='jet')return 'Нужен купленный ударный самолёт.';
    if(bombUsed)return 'Ядерный заряд этого матча уже использован.';
    const x=clamp(u.x,30,g[0].length*4-30),z=clamp(u.z,30,g.length*4-30);
@@ -239,7 +251,7 @@ function create({state,grid,emit,frame,hitHuman,respawn,finish,credit,wipe,radia
    gold=null;p.goldWeapon=p.weapon=p.team==='t'?'ak47':'m4a1';emit('cs16_army_loot',{epoch,nick:p.nick,weapon:p.weapon});return null;
  }
  function control(p,input,now=Date.now()){
-   const u=units[p?.frontSeat];if(!u||u.rider!==p||!p.alive||!input||now<(u.nextInput||0)||![input.yaw,input.pitch,input.forward,input.side,input.lift].every(Number.isFinite))return;
+   const u=seatUnit(p);if(!u||u.rider!==p||!p.alive||!input||now<(u.nextInput||0)||![input.yaw,input.pitch,input.forward,input.side,input.lift].every(Number.isFinite))return;
    u.nextInput=now+50;u.input={yaw:input.yaw,pitch:clamp(input.pitch,-1.4,1.4),forward:clamp(input.forward,-1,1),side:clamp(input.side,-1,1),lift:clamp(input.lift,-1,1),fire:input.fire===true,rocket:input.rocket===true,at:now};
  }
  function pilot(u,dt,now){
