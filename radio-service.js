@@ -81,7 +81,7 @@ function install({app,io,mongoose,authenticate}){
   function guard(owner){return async(req,res,next)=>{try{
     const u=await authenticate(String(req.headers.authorization||'').replace(/^Bearer /,''));
     if(!u||(owner&&u.username.toLowerCase()!=='fifflaren'))return res.status(403).json({success:false,message:'Нет доступа к эфиру.'});
-    next();
+    req.radioName=u.username;next();
   }catch{res.status(503).json({success:false,message:'Сервис эфира недоступен.'});}};}
   async function commit(s,cmd){
     let next;try{next=change(s,cmd,Date.now());}catch(e){e.status=400;throw e;}
@@ -97,10 +97,12 @@ function install({app,io,mongoose,authenticate}){
     }
   }
   const error=(res,e)=>res.status(e.status||503).json({success:false,message:e.status?e.message:/quota|space limit|out of.*space/i.test(e.message)?'Хранилище сервера заполнено.':'Сервис радио временно недоступен.'});
-  const storage=media.create({app,mongoose,guard,get,enqueue,send,error});
+  const origin=io?require('./radio-origin').create({io,mongoose,authenticate,enqueue,get,mediaType:media.mediaType}):null;
+  const storage=media.create({app,mongoose,guard,get,enqueue,send,error,origin});
   app.get('/api/radio/state',guard(false),async(req,res)=>{try{
     const s=await get();send(res,s,req.query.compact==='1'||req.query.since===String(s.rev));
   }catch(e){error(res,e);}});
+  if(origin)app.post('/api/radio/tracks',guard(true),(_req,res)=>res.status(409).json({success:false,message:'Обнови Support Hub. Новые песни сохраняются на ПК Fifflaren.'}));
   // Compatibility upload for 3.50.0/1, which send one BSON-sized payload.
   app.post('/api/radio/tracks',guard(true),express.raw({type:'application/octet-stream',limit:'12mb'}),async(req,res)=>{try{
     const mime=media.mediaType(req.body), title=String(req.query.title||'').trim().slice(0,140),duration=Number(req.query.duration);

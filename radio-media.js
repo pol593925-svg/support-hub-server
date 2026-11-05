@@ -26,7 +26,7 @@ function range(value,size){
 }
 const binary=v=>Buffer.isBuffer(v)?v:Buffer.from(v.value(true));
 const partKey=(id,n)=>id+':'+String(n).padStart(12,'0');
-const publicTrack=t=>({id:t._id,title:t.title,duration:t.duration});
+const publicTrack=t=>({id:t._id,title:t.title,duration:t.duration,...(t.addedBy?{addedBy:t.addedBy}:{})});
 function create({mongoose,app,guard,get,enqueue,send,error,kind='radio',origin,mayWatch}){
   const film=kind==='cinema',prefix='/api/'+kind,streamPath=prefix+(film?'/video':'/audio');
   function detect(data){
@@ -86,6 +86,7 @@ function create({mongoose,app,guard,get,enqueue,send,error,kind='radio',origin,m
     send(res,await enqueue(publicTrack(t)));
   }catch(e){error(res,e);}});
   if(film)app.use(prefix+'/uploads',guard(true),(_req,res)=>res.status(409).json({success:false,message:'Загрузка фильмов в рабочую базу отключена. Используй библиотеку на ПК Fifflaren.'}));
+  if(!film&&origin)origin.installUploads({app,guard,error,send});
   app.put(prefix+'/uploads/:id',guard(true),async(req,res)=>{try{
     const id=req.params.id,{size,duration}=req.body,title=String(req.body.title||'').trim().slice(0,200);
     if(!validId(id)||!title||!Number.isSafeInteger(size)||size<1||!Number.isFinite(duration)||duration<=0)throw fail(400,'Проверь файл и длительность трека.');
@@ -119,6 +120,7 @@ function create({mongoose,app,guard,get,enqueue,send,error,kind='radio',origin,m
     const id=req.params.id;if(!validId(id))throw fail(404,'Трек не найден.');
     if(mayWatch&&!await mayWatch(req,id))throw fail(403,'Этот фильм ещё не объявлен для просмотра.');
     if(film&&origin&&await origin.find(id))origin.online();
+    if(!film&&origin&&(await tracks.findOne({_id:id,ready:true}))?.storage==='pc')origin.online();
     const expires=Date.now()+(film?24:4)*3600*1000,mac=await sign(id,expires);
     res.set('Cache-Control','no-store').json({success:true,ticket:expires+'.'+mac});
   }catch(e){error(res,e);}});
@@ -128,6 +130,7 @@ function create({mongoose,app,guard,get,enqueue,send,error,kind='radio',origin,m
     const id=req.params.id;if(!validId(id))return res.sendStatus(404);
     if(film&&origin){const item=await origin.find(id);if(item)return await origin.stream(req,res,item,range);}
     const t=await tracks.findOne({_id:id,ready:true});
+    if(!film&&origin&&t?.storage==='pc')return await origin.stream(req,res,t,range);
     const legacy=!film&&(!t||t.legacy)?await old.findOne({_id:id}):null;
     if(!legacy&&(!t||t.legacy))return res.sendStatus(404);
     const buf=legacy?binary(legacy.data):null,size=buf?buf.length:t.size,span=range(req.headers.range,size);
