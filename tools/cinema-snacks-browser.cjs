@@ -29,6 +29,7 @@ const root=path.resolve(__dirname,'../../fifflaren-app');
   await host.reload();await host.waitForFunction(()=>document.querySelector('#cinDrinkURL-cola')?.value==='https://example.org/cola');
   const saved=await mongoose.connection.collection('cinema_settings').findOne({_id:'drinks'});assert.equal(saved.links.fanta,'https://example.org/fanta');
   await viewer.click('#cinOrderDrink');await viewer.waitForFunction(()=>document.querySelectorAll('.cin-drink-card:not(:disabled)').length===3);
+  assert(!/example|https?:|\\.org/.test(await viewer.locator('#cinDrinkCards').textContent()),'drink cards do not expose destinations');
   for(const img of await viewer.locator('.cin-drink-card img').all())await img.evaluate(img=>img.decode());
   if(process.env.CINEMA_QA_SCREEN)await viewer.screenshot({path:process.env.CINEMA_QA_SCREEN});
   await viewer.click('[data-drink="sprite"]');assert.deepEqual(await viewer.evaluate(()=>opened),['https://example.org/sprite']);
