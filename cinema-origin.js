@@ -1,6 +1,6 @@
 'use strict';
 const {Readable}=require('node:stream'),{pipeline}=require('node:stream/promises');
-const LIMIT=4_000_000_000,PART=512*1024;
+const LIMIT=10_000_000_000,PART=512*1024;
 const fail=(status,message)=>Object.assign(Error(message),{status});
 function create({io,mongoose,authenticate}){
   const ns=io.of('/cinema-origin'),keys=mongoose.connection.collection('cinema_keys'),legacy=mongoose.connection.collection('cinema_tracks');
@@ -27,7 +27,7 @@ function create({io,mongoose,authenticate}){
           seen.add(m.id);return {id:m.id,title:m.title,size:m.size,duration:m.duration,width:m.width,height:m.height,mime:m.mime,createdAt:Number(m.createdAt)||0,storage:'pc'};
         });
         const previous=await registry(),before=new Set(previous?.movies?.map(m=>m.id)),oldBytes=await legacyBytes();
-        if(movies.reduce((n,m)=>n+m.size,oldBytes)>LIMIT&&movies.some(m=>!before.has(m.id)))throw fail(409,'Лимит библиотеки — 4 ГБ.');
+        if(movies.reduce((n,m)=>n+m.size,oldBytes)>LIMIT&&movies.some(m=>!before.has(m.id)))throw fail(409,'Лимит библиотеки — 10 ГБ.');
         if(host!==sock||!sock.connected)throw fail(503,'ПК отключён.');
         await keys.updateOne({_id:'pc-library',hostId:sock.data.hostId},{$set:{movies}});sock.data.ready=true;cache.clear();ack({ok:true,legacyBytes:oldBytes});
       }catch(e){ack({error:e.status?e.message:'Не удалось сохранить каталог ПК.'});}

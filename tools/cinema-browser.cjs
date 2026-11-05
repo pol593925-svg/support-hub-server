@@ -61,7 +61,12 @@ async function main(){
     assert.equal((await fetch(url+'/api/cinema/video/'+id+'/ticket',{method:'POST',headers:{Authorization:'Bearer mira'}})).status,403);
     await host.click('#cinTest');await host.waitForFunction(()=>{const v=document.querySelector('#cinTestVideo');return v.currentTime>.15&&v.videoWidth>=1920&&v.webkitAudioDecodedByteCount>0;});
     assert.equal(await viewer.locator('#cinTestPanel').isVisible(),false);assert.equal((await mongoose.connection.collection('cinema_show').findOne({_id:'live'})).rev,stateBefore.rev);
-    await host.click('#cinTestClose');await host.click('#cinAttach');
+    await host.click('#cinTestClose');
+    const [attached]=await Promise.all([host.waitForResponse(r=>r.url()===url+'/api/cinema/control'&&r.request().method()==='POST'),host.click('#cinAttach')]);
+    assert.equal(attached.status(),200);assert.equal((await attached.json()).film.id,id);
+    const capacity=await (await fetch(url+'/api/cinema/library',{headers:{Authorization:'Bearer fifflaren'}})).json();
+    assert.equal(capacity.space.limit,10_000_000_000);assert.equal(capacity.space.used,original.length);
+    assert((await host.locator('#cinSpace').textContent()).includes('из 10 ГБ'));
     const ticket=await (await fetch(url+'/api/cinema/video/'+id+'/ticket',{method:'POST',headers:{Authorization:'Bearer mira'}})).json(),streamURL=url+'/api/cinema/video/'+id+'?ticket='+ticket.ticket;
     const full=await fetch(streamURL);assert.equal(full.status,200);assert.deepEqual(Buffer.from(await full.arrayBuffer()),original);
     const piece=await fetch(streamURL,{headers:{Range:'bytes=511999-525512'}});assert.equal(piece.status,206);assert.deepEqual(Buffer.from(await piece.arrayBuffer()),original.subarray(511999,525513));
