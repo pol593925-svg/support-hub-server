@@ -19,6 +19,7 @@ function install({io,app,mongoose,authenticate}){
     if(owner&&user.username.toLowerCase()!=='fifflaren')throw fail(403,'Эфиром управляет Fifflaren.');
     req.cinemaOwner=user.username.toLowerCase()==='fifflaren';next();
   }catch(e){error(res,e);}};
+  require('./cinema-snacks').install({app,mongoose,guard,error});
   const origin=require('./cinema-origin').create({io,mongoose,authenticate});
   media.create({mongoose,app,kind:'cinema',guard,error,origin,mayWatch:async(req,id)=>req.cinemaOwner||(await read()).film?.id===id});
   async function selectFilm(id){

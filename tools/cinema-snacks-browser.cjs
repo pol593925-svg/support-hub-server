@@ -1,0 +1,45 @@
+const assert=require('node:assert/strict'),path=require('node:path'),http=require('node:http'),fs=require('node:fs');
+const {chromium}=require('playwright'),express=require('express'),mongoose=require('mongoose'),{Server}=require('socket.io'),{MongoMemoryServer}=require('mongodb-memory-server');
+const root=path.resolve(__dirname,'../../fifflaren-app');
+(async()=>{
+ let db,io,browser;
+ try{
+  db=await MongoMemoryServer.create({instance:{launchTimeout:60000},binary:{version:'8.2.6'}});await mongoose.connect(db.getUri());
+  const app=express(),server=http.createServer(app);app.use(express.json());io=new Server(server);
+  require('../cinema-service').install({app,io,mongoose,authenticate:async t=>['fifflaren','mira'].includes(t)?{username:t}:null});
+  app.get('/',(req,res)=>res.send('<meta charset="utf-8"><link rel="stylesheet" href="/cinema.css"><link rel="stylesheet" href="/cinema-snacks.css"><div id="tab-admin"><div class="admin-card"></div></div><button id="enter" onclick="document.querySelector(\'#hubCinema\').showModal()">Кинозал</button><dialog id="hubCinema"><div class="cin-sound"></div><button id="leave" onclick="document.querySelector(\'#hubCinema\').close()">Выйти</button></dialog><script src="/cinema-snacks.js"></script><script>const nick=location.hash.slice(1);window.opened=[];HubCinemaSnacks.start({username:nick,token:nick,server:location.origin,openCinemaDrink:async url=>opened.push(url)});HubCinemaSnacks.attach(document.querySelector("#hubCinema"));</script>'));
+  for(const f of ['cinema.css','cinema-snacks.css','cinema-snacks.js'])app.get('/'+f,(req,res)=>res.sendFile(path.join(root,f)));
+  app.use('/assets/cinema',express.static(path.join(root,'assets/cinema')));
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));const url='http://127.0.0.1:'+server.address().port;
+  const api=async(token,body)=>fetch(url+'/api/cinema/drinks',{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+  assert.equal((await api('bad')).status,401);
+  assert.equal((await api('mira',{rev:0,links:{cola:'',sprite:'',fanta:''}})).status,403);
+  assert.equal((await api('fifflaren',{rev:0,links:{cola:'file:///bad',sprite:'',fanta:''}})).status,400);
+  browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'});const errors=[];
+  const host=await browser.newPage({viewport:{width:1150,height:790}}),viewer=await browser.newPage({viewport:{width:1000,height:700}});
+  for(const p of [host,viewer])p.on('pageerror',e=>errors.push(e.message));
+  await host.goto(url+'/#fifflaren');await viewer.goto(url+'/#mira');
+  assert.equal(await viewer.locator('#cinDrinkAdmin').count(),0);
+  await viewer.click('#enter');await viewer.click('#cinOrderDrink');await viewer.waitForFunction(()=>document.querySelectorAll('.cin-drink-card:disabled').length===3);
+  await viewer.click('#cinDrinkClose');
+  await host.waitForFunction(()=>!document.querySelector('#cinDrinkSave').disabled);
+  await host.fill('#cinDrinkURL-cola','https://example.org/cola');await host.fill('#cinDrinkURL-sprite','https://example.org/sprite');await host.fill('#cinDrinkURL-fanta','https://example.org/fanta');
+  await host.click('#cinDrinkSave');await host.waitForFunction(()=>document.querySelector('#cinDrinkStatus').textContent.startsWith('Сохранено.'));
+  assert.equal((await api('fifflaren',{rev:0,links:{cola:'',sprite:'',fanta:''}})).status,409);
+  await host.reload();await host.waitForFunction(()=>document.querySelector('#cinDrinkURL-cola')?.value==='https://example.org/cola');
+  const saved=await mongoose.connection.collection('cinema_settings').findOne({_id:'drinks'});assert.equal(saved.links.fanta,'https://example.org/fanta');
+  await viewer.click('#cinOrderDrink');await viewer.waitForFunction(()=>document.querySelectorAll('.cin-drink-card:not(:disabled)').length===3);
+  for(const img of await viewer.locator('.cin-drink-card img').all())await img.evaluate(img=>img.decode());
+  if(process.env.CINEMA_QA_SCREEN)await viewer.screenshot({path:process.env.CINEMA_QA_SCREEN});
+  await viewer.click('[data-drink="sprite"]');assert.deepEqual(await viewer.evaluate(()=>opened),['https://example.org/sprite']);
+  assert.equal(await viewer.locator('#cinDrinkMenu').evaluate(x=>x.open),false);
+  await viewer.click('#cinPopcorn');await viewer.waitForFunction(()=>document.querySelector('#cinPopCount').textContent==='5');await viewer.click('#cinPopCancel');
+  assert.equal(await viewer.locator('#cinPopDialog').evaluate(x=>x.open),false);
+  await viewer.click('#cinPopcorn');await viewer.waitForFunction(()=>document.querySelector('#cinPopTitle').textContent==='Попкорн готов!');
+  assert.equal(await viewer.locator('#cinPopCount').isVisible(),false);await viewer.click('#cinPopCancel');
+  await viewer.click('#cinPopcorn');await viewer.keyboard.press('Escape');assert.equal(await viewer.locator('#hubCinema').evaluate(x=>x.open),true);
+  await viewer.click('#leave');assert.equal(await viewer.locator('#cinPopDialog').evaluate(x=>x.open),false);
+  assert.deepEqual(errors,[]);
+  console.log('PASS owner-only settings, unsafe URL rejection, revision conflicts, persisted links, disabled unconfigured drinks, all illustrations, selected destination, popcorn countdown/cancel/ready/Escape');
+ }finally{await browser?.close();if(io)await new Promise(r=>io.close(r));await mongoose.disconnect();await db?.stop();}
+})().catch(e=>{console.error(e);process.exitCode=1;});
