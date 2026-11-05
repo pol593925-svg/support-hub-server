@@ -121,7 +121,7 @@ function create({mongoose,app,guard,get,enqueue,send,error,kind='radio',origin,m
     if(mayWatch&&!await mayWatch(req,id))throw fail(403,'Этот фильм ещё не объявлен для просмотра.');
     if(film&&origin&&await origin.find(id))origin.online();
     if(!film&&origin&&(await tracks.findOne({_id:id,ready:true}))?.storage==='pc')origin.online();
-    const expires=Date.now()+(film?24:4)*3600*1000,mac=await sign(id,expires);
+    const expires=Math.min(Date.now()+(film?24:4)*3600*1000,req.mediaTicketExpires||Infinity),mac=await sign(id,expires);
     res.set('Cache-Control','no-store').json({success:true,ticket:expires+'.'+mac});
   }catch(e){error(res,e);}});
   // The audio element can seek using native HTTP ranges. A ticket authorizes this track alone.
