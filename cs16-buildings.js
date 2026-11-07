@@ -10,6 +10,14 @@
   // Two adjacent flights; the second returns toward the front and exits onto the roof.
   for(let n=0;n<20;n++){add(9,n*.18,.5+n*.5,1.375,.18,.5,'step');add(10.375,3.6+n*.18,10-n*.5,1.375,.18,.5,'step');}
   add(0,7.2,0,.2,.75,12,'rail');add(0,7.2,11.8,12,.75,.2,'rail');add(0,7.2,0,9,.75,.2,'rail');
+  // Curved tiled roof over the front wing. The right stair exit and rear terrace remain open.
+  // Small conservative collision slices stay within 6cm of the authored continuous surface.
+  for(let n=0;n<48;n++){
+   const x=.15+n*8.7/48,w=8.7/48;
+   const height=u=>7.92+1.7*Math.pow(Math.max(0,1-Math.abs((u-4.5)/4.35)),1.25);
+   const top=Math.max(height(x),height(x+w),height(x+w/2));
+   add(x,7.18,-.25,w,top-7.18,5.5,'roof');boxes[boxes.length-1].animeRoof=true;
+  }
   // Stone lintels and sills; openings retain their original collision dimensions.
   add(3.8,0,-.12,.2,2.6,.24,'trim');add(7,0,-.12,.2,2.6,.24,'trim');add(3.8,2.6,-.12,3.4,.2,.24,'trim');
   for(const x of [1.5,5,8.5]){add(x-.12,4.38,-.15,2.24,.12,.35,'trim');add(x-.12,6,-.1,2.24,.12,.25,'trim');add(x-.12,4.5,-.1,.12,1.5,.25,'trim');add(x+2,4.5,-.1,.12,1.5,.25,'trim');}

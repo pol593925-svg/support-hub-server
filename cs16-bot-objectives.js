@@ -20,4 +20,15 @@ function destination(p,state,grid){const flags=state.cq?.flags||[],w=grid[0].len
  p.cqPathCell=at;
  for(const [dx,dz]of [[1,0],[-1,0],[0,1],[0,-1]]){const nx=x+dx,nz=z+dz;if(grid[nz]?.[nx]===0&&dist[nz*w+nx]===dist[at]-1)return {x:nx*4+2,z:nz*4+2};}return null;
 }
-module.exports={destination,field};
+function tacticalDestination(p,state,grid){
+ const wps=require('./cs16-tactical-map').waypoints(state.map),wp=wps[p.bwp%wps.length],goal={x:wp[0]*4+2,z:wp[1]*4+2};
+ if(Math.hypot(goal.x-p.bx,goal.z-p.bz)<2){p.bwp=(p.bwp+1)%wps.length;return null;}
+ const x=Math.floor(p.bx/4),z=Math.floor(p.bz/4),at=z*grid[0].length+x,dist=field(grid,goal);
+ if(dist[at]<0){p.bwp=(p.bwp+1)%wps.length;return null;}
+ const centre={x:x*4+2,z:z*4+2};if(p.pathCell!==at&&Math.hypot(p.bx-centre.x,p.bz-centre.z)>.45)return centre;
+ p.pathCell=at;
+ for(const [dx,dz]of [[1,0],[-1,0],[0,1],[0,-1]])if(grid[z+dz]?.[x+dx]===0&&dist[(z+dz)*grid[0].length+x+dx]===dist[at]-1)return{x:(x+dx)*4+2,z:(z+dz)*4+2};
+ return null;
+}
+function visible(p,q,grid,map){const o=[p.bx,(p.ly||0)+1.5,p.bz],target=[q.bot?q.bx:q.lx,(q.ly||0)+1.2,q.bot?q.bz:q.lz],d=target.map((v,i)=>v-o[i]),length=Math.hypot(...d);return length>0&&Buildings.trace(grid,map,o,d.map(v=>v/length),length)>=length-.25;}
+module.exports={destination,field,tacticalDestination,visible};

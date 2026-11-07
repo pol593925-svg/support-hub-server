@@ -6,6 +6,7 @@
   'use strict';
   const cache = new WeakMap();
   function buildingSites(grid) {
+    const tactical=(typeof window==='undefined'?require('./cs16-tactical-map'):window.CS16TacticalMap)?.buildings(grid);if(tactical)return tactical;
     const sites = [];
     for (let z = 26; z < grid.length - 18; z += 15)
       for (let x = 9; x < grid[0].length - 15; x += 13) {
