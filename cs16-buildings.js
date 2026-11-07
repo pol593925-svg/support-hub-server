@@ -3,6 +3,7 @@
  const Passages=typeof window!=='undefined'?window.CS16Passages:require('./cs16-passages');
  const Front=typeof window!=='undefined'?window.CS16Front:require('./cs16-front');
  const cache=new WeakMap();
+ function roofHeight(u){const t=Math.min(1,Math.abs((u-4.5)/4.35));return 7.92+1.7*Math.pow(Math.cos(t*Math.PI/2),1.9);}
  function layout(grid,map){if(cache.has(grid))return cache.get(grid);const buildings=Terrain.buildingSites(grid);const boxes=[];for(const b of buildings){const add=(x,y,z,w,h,d,kind='wall')=>boxes.push({min:[b.x+x,y,b.z+z],max:[b.x+x+w,y+h,b.z+z+d],kind,building:b.id});
   add(0,-.2,0,12,.22,12,'floor');add(0,3.35,0,9,.25,12,'floor');add(9,3.35,10,3,.25,2,'floor');add(0,6.95,0,10.5,.25,12,'roof');add(10.5,6.95,10,1.5,.25,2,'roof');
   // Ground entrance, window openings, continuous corner posts.
@@ -11,11 +12,10 @@
   for(let n=0;n<20;n++){add(9,n*.18,.5+n*.5,1.375,.18,.5,'step');add(10.375,3.6+n*.18,10-n*.5,1.375,.18,.5,'step');}
   add(0,7.2,0,.2,.75,12,'rail');add(0,7.2,11.8,12,.75,.2,'rail');add(0,7.2,0,9,.75,.2,'rail');
   // Curved tiled roof over the front wing. The right stair exit and rear terrace remain open.
-  // Small conservative collision slices stay within 6cm of the authored continuous surface.
-  for(let n=0;n<48;n++){
-   const x=.15+n*8.7/48,w=8.7/48;
-   const height=u=>7.92+1.7*Math.pow(Math.max(0,1-Math.abs((u-4.5)/4.35)),1.25);
-   const top=Math.max(height(x),height(x+w),height(x+w/2));
+  // Small conservative collision slices stay within 7cm of the authored continuous surface.
+  for(let n=0;n<96;n++){
+   const x=.15+n*8.7/96,w=8.7/96;
+   const top=Math.max(roofHeight(x),roofHeight(x+w),roofHeight(x+w/2));
    add(x,7.18,-.25,w,top-7.18,5.5,'roof');boxes[boxes.length-1].animeRoof=true;
   }
   // Stone lintels and sills; openings retain their original collision dimensions.
@@ -102,5 +102,5 @@
     const base=find(names[m.userData.surfaceKind]);if(!base)continue;m.map=base.map;m.normalMap=base.normalMap;m.roughnessMap=base.roughnessMap;m.bumpMap=null;m.roughness=base.roughness;m.metalness=base.metalness;m.normalScale.copy(base.normalScale||new T.Vector2(1,1));m.needsUpdate=true;}},dispose(){for(const g of geometries)g.dispose();for(const m of materials)m.dispose();for(const t of textures)t.dispose();group.removeFromParent();}};
  }
 
- return {layout,contains,rayBox,ray,hit,activeBoxes,collide,vertical,trace,create};
+ return {roofHeight,layout,contains,rayBox,ray,hit,activeBoxes,collide,vertical,trace,create};
 });
