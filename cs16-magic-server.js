@@ -21,7 +21,7 @@ function create({state,grid,emit,personal,damage,combat}){
   else if(id==='owl')p.speedUntil=now+6000;
   else if(id==='fox')sync(p,{reload:true});
   else return 'Способность не найдена';
-  p[key]=now+(slot==='hero'?M.spells[id].cooldown:M.petCooldown);for(const[q,n]of hits)damage(p,q,n);for(const q of affected)sync(q,{hp:q.hp});sync(p,{hp:p.hp});emit('cs16_magic_fx',{by:p.nick,slot,id,origin,pos:point,now});return null;
+  p[key]=now+(slot==='hero'?M.spells[id].cooldown:M.petCooldown);for(const[q,n]of hits)damage(p,q,n);for(const q of affected)sync(q,{hp:q.hp});sync(p,{hp:p.hp});emit('cs16_magic_fx',{by:p.nick,team:p.team,slot,id,origin,pos:point,dir,now});return null;
  }
  return {cast,absorb,snapshot,reset,sync};
 }

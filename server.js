@@ -1317,7 +1317,7 @@ require('./cinema-service').install({app,io,mongoose,authenticate:token=>callsSe
 require('./exchange-review')({app,Exchange,authenticate:token=>callsService.actor(token)});
 require('./team-office')({app,mongoose,User,Event,authenticate:token=>callsService.actor(token)});
 require('./voxel-service')({io,mongoose,authenticate:token=>callsService.actor(token)});
-for(const protocol of [1,2])require('./royale-service')({io,protocol,authenticate:token=>callsService.actor(token)});
+// Royale sockets are retired. CS is a single 5v5 round room.
 require('./assistance-service')({io,authenticate:token=>callsService.actor(token),audit:data=>new Event({type:'remote_assistance',user:data.admin,date:todayStr(),data}).save()});
 let onlineUsers = new Map(); // socket.id -> nick
 
@@ -4582,13 +4582,14 @@ CS16Stat.find({}).then(list => { for (const d of list) cs16Stats.set(d.nick, { k
 setInterval(cs16StatsFlush, 30000);
 const CS16_MAX_ROUNDS = 30;
 const CS16_WIN_SCORE = 16;
+const CS16Rounds=require('./cs16-round-rules');
 const cs16 = {
   players: new Map(), // socketId -> {nick, team, money, hp, armor, alive, kills, deaths, weapon, lossStreak, joinedAt}
   phase: 'lobby',     // lobby | freeze | live | roundend | matchend
   mode: 5,            // размер команды 1..5
   map: 'dust2',       // 3.24.0: dust2 | inferno
   gm: 'classic',      // 3.24.0: classic | gg (Gun-Game)
-  swapped: false,   // 3.24.0: смена сторон после 8 раундов (MR15)
+  swapped: false,   // 3.24.0: смена сторон после 15 раундов (MR15)
   scores: { t: 0, ct: 0 },
   round: 0,
   winner: null,
@@ -4787,10 +4788,10 @@ function cs16VehDestroy(owner, attacker, pos) {
 // ---------- 3.24.0: БОТЫ ----------
 const cs16BotObjectives=require('./cs16-bot-objectives');
 let cs16BotSeq = 0;
-function cs16BotAdd(bySocket) {
-  if (cs16.phase === 'matchend') return;
+function cs16BotAdd(bySocket, forcedTeam) {
+  if (cs16.phase !== 'lobby' || (cs16TeamCount('t')>=5 && cs16TeamCount('ct')>=5)) return;
   const id = 'cs16bot_' + (++cs16BotSeq);
-  const team = cs16TeamCount('t') <= cs16TeamCount('ct') ? 't' : 'ct';
+  const team = forcedTeam || (cs16TeamCount('t') <= cs16TeamCount('ct') ? 't' : 'ct');
   const wps = CS16_WPS[cs16.map] || CS16_WPS.dust2;
   cs16.players.set(id, {
     nick: '🤖 Бот-' + cs16BotSeq, bot: true, characterId:['ember','tide','jade','aurora'][cs16BotSeq%4], team, money: 800, hp: 100, armor: 0,
@@ -4879,6 +4880,7 @@ function cs16BotStep(p, ux, uz, grid) {
 }
 
 function cs16StartRound() {
+  CS16Rounds.normalize(cs16);
   fieldEnvironment.reset();
   cs16BrokenProps.clear();
   cs16ClearTimers();
@@ -4892,7 +4894,7 @@ function cs16StartRound() {
   cs16Missiles.clear();cs16Front.reset();cs16Field();if(cs16.gm==='cq')cs16Conquest.start(now);
   let ti = 0, ci = 0;
   for (const p of cs16.players.values()) {
-    p.alive = true; p.hp = 100; p.vehSeat=null; p.veh = null; // 3.32.0: техника не переживает раунд
+    p.alive = !!p.team; p.hp = 100; p.vehSeat=null; p.veh = null; // 3.32.0: техника не переживает раунд
     if (cs16.gm === 'gg') { p.ggIdx = 0; p.weapon = CS16_GG_LADDER[0]; }
     else if (!p.weapon) p.weapon = p.team === 't' ? 'glock' : 'usp';
     p.frontSeat=null;p.strikeJet=null;p.goldWeapon=null;p.frontChargeAt=0;p.cqRespawnAt=0;if(cs16.gm==='assault'){CS16Classes.apply(p);p.money=5000;p.cqProtectedUntil=cs16.freezeEnds+1800;}
@@ -4901,7 +4903,7 @@ function cs16StartRound() {
   cs16Broadcast();
   io.emit('cs16_round_start', {
     round: cs16.round, scores: cs16.scores, now: Date.now(),
-    spawns: [...cs16.players.entries()].map(([id, p]) => {
+    spawns: [...cs16.players.entries()].filter(([,p])=>p.team).map(([id, p]) => {
       const idx = p.team === 't' ? ti++ : ci++;
       const pos = cs16Spawn(p.team || 't', idx, 0);
       if (p.bot) { p.bx = pos[0]; p.bz = pos[2]; }
@@ -4946,8 +4948,8 @@ function cs16EndRound(winner, reason) {
   cs16Broadcast();
   // до смены сторон считаем, не набрана ли победа (после свопа ключи scores меняются)
   const reachedWin = cs16.scores[winner] >= CS16_WIN_SCORE || cs16.round >= CS16_MAX_ROUNDS;
-  // 3.24.0: MR15 — после 8 раундов команды меняются сторонами
-  if (cs16.gm !== 'gg' && cs16.round === 8 && !cs16.swapped) {
+  // 3.24.0: MR15 — после 15 раундов команды меняются сторонами
+  if (cs16.gm !== 'gg' && cs16.round === 15 && !cs16.swapped) {
     cs16.swapped = true;
     for (const p of cs16.players.values()) {
       if (!p.team) continue;
@@ -5036,8 +5038,7 @@ io.on('connection', (socket) => {
   socket.on('cs16_army_ready',d=>{const p=cs16.players.get(socket.id);if(p&&cs16.phase==='freeze'&&d?.epoch===cs16Front.status().epoch&&d.map===cs16.map)p.readyEpoch=d.epoch;});
   socket.on('cs16_army_bomb',()=>{const error=cs16Front.dropBomb(cs16.players.get(socket.id));if(error)socket.emit('cs16_err',error);});
   socket.on('cs16_army_claim',()=>{const error=cs16Front.claim(cs16.players.get(socket.id));if(error)socket.emit('cs16_err',error);else cs16Personal(socket.id);});
-  socket.on('cs16_army',enabled=>{if(typeof enabled!=='boolean'||socket.id!==cs16HostId()||cs16.phase!=='lobby')return;
-    cs16.army=enabled;if(enabled)for(const [id,p]of cs16.players)if(p.bot){cs16.players.delete(id);io.emit('cs16_leave',{nick:p.nick});}cs16Broadcast();});
+  socket.on('cs16_army',()=>{socket.emit('cs16_err','Доступен только бой 5×5 по раундам');});
   socket.on('cs16_front_charge',d=>{const error=cs16Front.requestCharge(cs16.players.get(socket.id),d?.dir);if(error)socket.emit('cs16_err',error);});
   socket.on('cs16_front_board',kind=>{const error=cs16Front.board(cs16.players.get(socket.id),kind);if(error)socket.emit('cs16_err',error);});
   socket.on('cs16_front_controls',d=>cs16Front.control(cs16.players.get(socket.id),d));
@@ -5055,39 +5056,29 @@ io.on('connection', (socket) => {
     const p = cs16.players.get(socket.id);
     if (!p) return;
     if(p.frontSeat!=null)cs16Front.leave(p);
-    if (team !== 't' && team !== 'ct') { p.team = null; cs16Broadcast(); return; }
-    if (cs16TeamCount(team) >= cs16.mode) { io.to(socket.id).emit('cs16_err', 'Команда заполнена'); return; }
+    if (team !== 't' && team !== 'ct') { p.team = null; p.alive = false; cs16CheckWipe(); cs16Broadcast(); return; }
+    if(p.team===team)return;
+    if(CS16Rounds.count(cs16,team)>=5){const bot=CS16Rounds.replacementBot(cs16,team);if(!bot){socket.emit('cs16_err','Команда заполнена');return;}const old=cs16.players.get(bot);cs16.players.delete(bot);io.emit('cs16_leave',{nick:old.nick});}
     // 3.15.9: можно вступить даже в уже начатый матч — игрок войдёт в игру со следующего раунда
     p.team = team; p.weapon = null; p.rpgAmmo = 0;
     if (cs16.phase !== 'lobby') {
       p.alive = false; p.hp = 100; p.armor = 0; p.kit = false;
       if (p.money < 800) p.money = 800;
-      io.to(socket.id).emit('cs16_err', cs16.gm==='cq'?'Ты в команде! Возрождение через 4 секунды.':'Ты в команде! Вступишь в игру со следующего раунда');
+      io.to(socket.id).emit('cs16_err', 'Ты в команде! Вступишь в игру со следующего раунда');
+      cs16CheckWipe();
     }
     cs16Broadcast();
   });
 
-  socket.on('cs16_mode', (n) => {
-    if (socket.id !== cs16HostId() || cs16.phase !== 'lobby') return;
-    n = Math.max(1, Math.min(5, parseInt(n) || 5));
-    cs16.mode = n;
-    // Подчищаем лишних, если режим уменьшили
-    for (const team of ['t', 'ct']) {
-      let c = 0;
-      for (const p of cs16.players.values()) {
-        if (p.team === team) { c++; if (c > n) p.team = null; }
-      }
-    }
-    cs16Broadcast();
+  socket.on('cs16_mode', () => {
+    if(socket.id!==cs16HostId()||cs16.phase!=='lobby')return;
+    CS16Rounds.normalize(cs16);cs16Broadcast();
   });
 
   socket.on('cs16_start', () => {
     if (socket.id !== cs16HostId() || cs16.phase !== 'lobby') return;
-    // 3.16.0: матч можно начать с любым составом — 2v1, 3v2 и т.д.
-    if (cs16.army?![...cs16.players.values()].some(p=>p.team&&!p.bot):(cs16TeamCount('t') < 1 || cs16TeamCount('ct') < 1)) {
-      io.to(socket.id).emit('cs16_err', 'Нужен хотя бы 1 игрок в каждой команде');
-      return;
-    }
+    if(!CS16Rounds.canStart(cs16)){socket.emit('cs16_err','Вступи в команду. Пустые места займут боты.');return;}
+    CS16Rounds.fill(cs16,team=>cs16BotAdd(socket,team));
     cs16.scores = { t: 0, ct: 0 }; cs16.round = 0; cs16.winner = null; cs16.swapped = false;
     for (const p of cs16.players.values()) { cs16Magic.reset(p);p.money = 800; p.kills = 0; p.deaths = 0; p.armor = 0; p.kit = false; p.ggIdx = 0; p.weapon = null; p.rpgAmmo = 0; }
     cs16StartRound();
@@ -5096,23 +5087,23 @@ io.on('connection', (socket) => {
   // 3.24.0: выбор карты / режима / боты (только хост, только в лобби)
   socket.on('cs16_map', (m) => {
     if (socket.id !== cs16HostId() || cs16.phase !== 'lobby') return;
-    if (!['dust2','inferno','frontline'].includes(m)) return;
+    if (!CS16Rounds.MAPS.includes(m)) return;
     cs16.map = m;
     cs16Broadcast();
   });
   socket.on('cs16_gm', (g) => {
     if (socket.id !== cs16HostId() || cs16.phase !== 'lobby') return;
-    if (!['classic','gg','cq','assault'].includes(g)) return;
+    if (g!=='classic'){socket.emit('cs16_err','Доступен только бой 5×5 по раундам');return;}
     cs16.gm = g;
     cs16Broadcast();
   });
   socket.on('cs16_botadd', () => {
-    if (socket.id !== cs16HostId()||cs16.army) return;
-    if (cs16TeamCount('t') >= cs16.mode || cs16TeamCount('ct') >= cs16.mode) { io.to(socket.id).emit('cs16_err', 'Команды заполнены — увеличь размер'); return; }
+    if (socket.id !== cs16HostId()||cs16.phase!=='lobby') return;
+    if (cs16TeamCount('t') >= 5 && cs16TeamCount('ct') >= 5) { io.to(socket.id).emit('cs16_err', 'Команды заполнены — максимум 5×5'); return; }
     cs16BotAdd(socket);
   });
   socket.on('cs16_botdel', () => {
-    if (socket.id !== cs16HostId()) return;
+    if (socket.id !== cs16HostId() || cs16.phase !== 'lobby') return;
     cs16BotDel();
   });
 
