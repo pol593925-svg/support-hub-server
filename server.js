@@ -4663,15 +4663,16 @@ function cs16Personal(sid) { const p = cs16.players.get(sid); if (p) io.to(sid).
 function cs16Spawn(team,index,total){if(cs16.gm==='assault'){const pos=cs16Front.spawn(team,index);pos[1]+=1.6;return pos;}index=Math.max(0,Number.isFinite(index)?Math.floor(index):0)%10;const pos=team==='ct'?[(57+index%3)*4,0,(9+Math.floor(index/3))*4]:[(cs16.map==='inferno'?51:48)*4+(index%5)*4,0,((cs16.map==='inferno'?105:108)+Math.floor(index/5))*4];const safe=require('./cs16-props').safeSpawn(CS16_GRID[cs16.map]||CS16_GRID.dust2,CS16TacticalMap.identify(CS16_GRID[cs16.map])?CS16TacticalMap.spawn(cs16.map,team,index):pos);return [safe[0],1.6+CS16Terrain.walkHeight(CS16_GRID[cs16.map],safe[0],safe[2]),safe[2]];}
 
 // 3.24.0: единый подсчёт урона и убийств (игроки и боты)
-function cs16ApplyHit(attacker, target, weapon, head, zone, dist, heavy, rawDamage) {
+function cs16ApplyHit(attacker, target, weapon, head, zone, dist, heavy, rawDamage, hitId) {
   if((cs16.gm==='cq'||cs16.gm==='assault')&&target.cqProtectedUntil>Date.now())return false;
-  const result = Number.isFinite(rawDamage)?{damage:rawDamage,armorUsed:0}:CS16Combat.damage(weapon,head?'head':zone,dist,target.armor,heavy);
+  zone=head||zone==='head'?'head':zone==='leg'?'leg':'body';head=zone==='head';
+  const result = Number.isFinite(rawDamage)?{damage:rawDamage,armorUsed:0}:CS16Combat.damage(weapon,zone,dist,target.armor,heavy);
   if (!result.damage) return;
   const boost=!Number.isFinite(rawDamage)&&attacker?.goldWeapon===weapon?1.35:1;
   const dmg = Math.min(target.hp,cs16Magic.absorb(target,Math.round(result.damage*boost)));
   target.armor = Math.max(0,target.armor-result.armorUsed);
   target.hp -= dmg;
-  io.emit('cs16_hit', { target: target.nick, hp: target.hp, armor:target.armor, dmg, head: !!head, by: attacker ? attacker.nick : null });
+  io.emit('cs16_hit', { target: target.nick, hp: target.hp, armor:target.armor, dmg, head: !!head, zone, weapon, hitId, armorDamage:result.armorUsed, armorBreak:result.armorUsed>0&&target.armor===0, by: attacker ? attacker.nick : null });
   if (target.hp <= 0) {
     target.alive = false; target.deaths += 1;
     if (attacker) attacker.kills += 1;
@@ -5158,7 +5159,7 @@ io.on('connection', (socket) => {
     const now = Date.now();
     if (p.lastRegisteredHit && now-p.lastRegisteredHit<interval*.75) return;
     p.lastRegisteredHit=now;
-    cs16ApplyHit(p,target,d.weapon,!!d.head,['head','body','leg'].includes(d.zone)?d.zone:'body',distance,!!d.heavy);
+    cs16ApplyHit(p,target,d.weapon,!!d.head,['head','body','leg'].includes(d.zone)?d.zone:'body',distance,!!d.heavy,undefined,Number.isSafeInteger(d.hitId)&&d.hitId>0&&d.hitId<=2147483647?d.hitId:undefined);
   });
 
   // Граната: ретрансляция полёта + серверный подсчёт урона при взрыве
