@@ -856,6 +856,7 @@ app.post('/api/admin/password', verifyAdmin, async (req, res) => {
     if (!user) return res.status(404).json({ success: false, message: 'Пользователь не найден' });
 
     user.password = await bcrypt.hash(newPassword, 10);
+    user.callsSessions=[];
     await user.save();
     res.json({ success: true, username: user.username });
   } catch (err) {
@@ -1311,6 +1312,7 @@ const io = new Server(server, {
 
 // Список активных пользователей в чате
 const callsService=require('./calls-service')({app,io,User,Event});
+require('./auth-session')({app,User,authenticate:token=>callsService.actor(token)});
 require('./team-access')({app,io,User,onlineUsers:()=>onlineUsers,authenticate:token=>callsService.actor(token)});
 require('./radio-service').install({app,io,mongoose,authenticate:token=>callsService.actor(token)});
 require('./cinema-service').install({app,io,mongoose,authenticate:token=>callsService.actor(token)});
