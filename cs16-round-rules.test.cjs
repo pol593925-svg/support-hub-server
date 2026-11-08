@@ -21,7 +21,7 @@ test('shop and combat reject retired weapons even if a player carries old vehicl
 });
 function fixture(){const handlers={},events=[],state={phase:'lobby',players:new Map([['host',{nick:'host',team:'t'}]]),mode:3,gm:'cq',army:true,map:'frontline'};let seq=0,rounds=0;
  const socket={id:'host',on(n,fn){handlers[n]=fn},emit:(n,d)=>events.push([n,d])};const io={emit:(...e)=>events.push(e),to:()=>socket};
- const sandbox={socket,io,cs16:state,CS16Rounds:rules,cs16HostId:()=> 'host',cs16TeamCount:t=>rules.count(state,t),cs16Broadcast:()=>{},cs16Magic:{reset:()=>{}},cs16BotAdd:(_,team)=>state.players.set('bot'+(++seq),{nick:'bot'+seq,bot:true,team}),cs16StartRound:()=>rounds++};
+ const sandbox={socket,io,cs16:state,CS16Rounds:rules,cs16HostId:()=> 'host',cs16TeamCount:t=>rules.count(state,t),cs16Broadcast:()=>{},cs16Magic:{reset:()=>{}},cs16BotAdd:(_,team)=>state.players.set('bot'+(++seq),{nick:'bot'+seq,bot:true,team}),cs16PrepareMatch:()=>rounds++};
  vm.createContext(sandbox);const a=source.indexOf("  socket.on('cs16_mode',"),b=source.indexOf("  socket.on('cs16_botadd',",a);vm.runInContext(source.slice(a,b),sandbox);
  return {state,handlers,events,rounds:()=>rounds,socket};}
 test('start fills precisely 5+5, retires army and old mode even for old clients',()=>{const f=fixture();f.handlers.cs16_start();assert.equal(rules.count(f.state,'t'),5);assert.equal(rules.count(f.state,'ct'),5);assert.equal(f.state.players.size,10);assert.equal(f.state.gm,'classic');assert.equal(f.state.mode,5);assert.equal(f.state.army,false);assert.equal(f.state.map,'dust2');assert.equal(f.rounds(),1)});

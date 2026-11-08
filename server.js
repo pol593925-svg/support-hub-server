@@ -4578,7 +4578,7 @@ const CS16_WIN_SCORE = 16;
 const CS16Rounds=require('./cs16-round-rules');
 const cs16 = {
   players: new Map(), // socketId -> {nick, team, money, hp, armor, alive, kills, deaths, weapon, lossStreak, joinedAt}
-  phase: 'lobby',     // lobby | freeze | live | roundend | matchend
+  phase: 'lobby',     // lobby | loading | freeze | live | roundend | matchend
   mode: 5,            // размер команды 1..5
   map: 'dust2',       // 3.24.0: dust2 | inferno
   gm: 'classic',      // 3.24.0: classic | gg (Gun-Game)
@@ -4626,20 +4626,29 @@ setInterval(()=>{if(cs16.phase==='live')cs16Front.tick();},200).unref();
 function cs16HostId() { return cs16.players.keys().next().value || null; }
 function cs16TeamCount(team) { let n = 0; for (const p of cs16.players.values()) if (p.team === team) n++; return n; }
 function cs16Alive(team) { let n = cs16Front.alive(team); for (const p of cs16.players.values()) if (p.team === team && p.alive) n++; return n; }
-function cs16ClearTimers() { for (const t of cs16.timers) clearTimeout(t); cs16.timers = []; if (cs16.roundTimeout) { clearTimeout(cs16.roundTimeout); cs16.roundTimeout = null; } }
+function cs16ClearTimers() { cs16Loading.cancel(); for (const t of cs16.timers) clearTimeout(t); cs16.timers = []; if (cs16.roundTimeout) { clearTimeout(cs16.roundTimeout); cs16.roundTimeout = null; } }
 function cs16Later(fn, ms) { cs16.timers.push(setTimeout(fn, ms)); }
 
 const CS16Characters=require('./cs16-characters');
 const CS16Magic=require('./cs16-magic');
 const fieldEnvironment=require('./cs16-environment-server').create({state:cs16,grid:()=>CS16_GRID[cs16.map]||CS16_GRID.dust2,emit:(n,d)=>io.emit(n,d)});
 const cs16Magic=require('./cs16-magic-server').create({state:cs16,grid:()=>CS16_GRID[cs16.map],emit:(n,d)=>io.emit(n,d),combat:CS16Combat,personal:(p,d)=>{const sid=[...cs16.players].find(([,q])=>q===p)?.[0];if(sid&&!p.bot)io.to(sid).emit('cs16_magic_state',d);},damage:(p,q,n)=>cs16ApplyHit(p,q,'magic',false,'body',0,false,n)});
+const cs16Loading=require('./cs16-loading-gate').create({state:cs16,
+  publish:data=>io.to('cs16-front').emit('cs16_load_state',data),start:cs16StartRound,
+  fill:()=>CS16Rounds.fill(cs16,team=>cs16BotAdd(null,team,true)),
+  abort:message=>{cs16.phase='lobby';cs16.round=0;cs16Broadcast();io.to('cs16-front').emit('cs16_load_error',message);}
+});
+function cs16PrepareMatch(){
+  cs16ClearTimers();cs16.bomb=null;cs16Missiles.clear();cs16Front.clear();
+  cs16Loading.begin();cs16Broadcast();
+}
 function cs16State() {
   return {
     phase: cs16.phase, mode: cs16.mode, round: cs16.round,
     map: cs16.map, gm: cs16.gm, army:!!cs16.army, // 3.24.0
     scores: cs16.scores, winner: cs16.winner,cq:cs16.gm==='cq'?cs16.cq:null,
     host: (cs16HostId() && cs16.players.get(cs16HostId()) || {}).nick || null,
-    freezeEnds: cs16.freezeEnds, roundEnds: cs16.roundEnds, buyUntil: cs16.buyUntil,
+    freezeEnds: cs16.freezeEnds, roundEnds: cs16.roundEnds, buyUntil: cs16.buyUntil, loading:cs16Loading.snapshot(),
     now: Date.now(),
     players: [...cs16.players.entries()].map(([id, p]) => ({
       id, nick: p.nick, characterId:CS16Characters.normalize(p.characterId),petId:CS16Magic.petValid(p.petId)?p.petId:null, classId:p.classId||'assault',nextClass:p.nextClass||p.classId||'assault',team: p.team, alive: p.alive, hp: p.hp,
@@ -4781,8 +4790,8 @@ function cs16VehDestroy(owner, attacker, pos) {
 // ---------- 3.24.0: БОТЫ ----------
 const cs16BotObjectives=require('./cs16-bot-objectives');
 let cs16BotSeq = 0;
-function cs16BotAdd(bySocket, forcedTeam) {
-  if (cs16.phase !== 'lobby' || (cs16TeamCount('t')>=5 && cs16TeamCount('ct')>=5)) return;
+function cs16BotAdd(bySocket, forcedTeam, preparing=false) {
+  if (!(cs16.phase==='lobby'||preparing&&cs16.phase==='loading') || (cs16TeamCount('t')>=5 && cs16TeamCount('ct')>=5)) return;
   const id = 'cs16bot_' + (++cs16BotSeq);
   const team = forcedTeam || (cs16TeamCount('t') <= cs16TeamCount('ct') ? 't' : 'ct');
   const wps = CS16_WPS[cs16.map] || CS16_WPS.dust2;
@@ -5028,6 +5037,7 @@ io.on('connection', (socket) => {
     socket.emit('cs16_props',{map:cs16.map,ids:[...cs16BrokenProps],snapshot:true});socket.emit('cs16_front_reset',cs16Front.snapshot());
   });
 
+  socket.on('cs16_load_progress',data=>cs16Loading.report(socket.id,data));
   CS16Rounds.guard(socket);
   fieldEnvironment.attach(socket);
   socket.on('cs16_army_loader',()=>{const p=cs16.players.get(socket.id);if(p)p.armyLoader=true;});
@@ -5077,7 +5087,7 @@ io.on('connection', (socket) => {
     CS16Rounds.fill(cs16,team=>cs16BotAdd(socket,team));
     cs16.scores = { t: 0, ct: 0 }; cs16.round = 0; cs16.winner = null; cs16.swapped = false;
     for (const p of cs16.players.values()) { cs16Magic.reset(p);p.money = 800; p.kills = 0; p.deaths = 0; p.armor = 0; p.kit = false; p.ggIdx = 0; p.weapon = null; p.rpgAmmo = 0; }
-    cs16StartRound();
+    cs16PrepareMatch();
   });
 
   // 3.24.0: выбор карты / режима / боты (только хост, только в лобби)
@@ -5364,7 +5374,7 @@ io.on('connection', (socket) => {
     cs16ClearTimers();
     cs16.scores = { t: 0, ct: 0 }; cs16.round = 0; cs16.winner = null; cs16.bomb = null;
     for (const p of cs16.players.values()) { cs16Magic.reset(p);p.money = 800; p.kills = 0; p.deaths = 0; p.armor = 0; p.kit = false; p.hp = 100; p.alive = true; p.weapon = null; p.rpgAmmo = 0; }
-    cs16StartRound();
+    cs16PrepareMatch();
   });
   socket.on('cs16_restart', () => { // рестарт посреди матча: счёт с нуля, команды сохраняются
     if (!cs16IsBoss(socket)) return;
@@ -5372,7 +5382,7 @@ io.on('connection', (socket) => {
     cs16ClearTimers();
     cs16.scores = { t: 0, ct: 0 }; cs16.round = 0; cs16.winner = null; cs16.bomb = null;
     for (const p of cs16.players.values()) { cs16Magic.reset(p);p.money = 800; p.kills = 0; p.deaths = 0; p.armor = 0; p.kit = false; p.hp = 100; p.alive = true; p.weapon = null; p.rpgAmmo = 0; }
-    cs16StartRound();
+    cs16PrepareMatch();
   });
   socket.on('cs16_tomenu', () => {
     if (!cs16IsBoss(socket)) return;
