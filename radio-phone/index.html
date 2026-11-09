@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#153c32"><title>Радио · Support Hub</title><link rel="stylesheet" href="/radio-phone/phone.css"><script src="/radio-phone/phone.js" defer></script></head>
+<body><main>
+  <header class="brand"><span class="brand-mark">S</span><div>Support Hub<small>КОМАНДНОЕ РАДИО</small></div><span class="phone-tag">С телефона</span></header>
+  <section class="hero"><span class="eyebrow" id="modeLabel">МУЗЫКА ОБЪЕДИНЯЕТ</span><h1 id="pageTitle">Твои песни.<br>Наш общий эфир.</h1><p id="intro">Добавляй музыку с телефона в очередь команды.</p><div class="record" aria-hidden="true"><i></i><b>SH</b></div></section>
+  <p id="notice" role="status" aria-live="polite">Подключаемся…</p>
+  <section id="gate" class="panel" hidden><span class="eyebrow">ТОЛЬКО ДЛЯ FIFFLAREN</span><h2>Твой DJ-пульт</h2><p>Введи пароль, чтобы управлять общим эфиром с телефона.</p><form id="pinForm"><label for="pin">Пароль пульта</label><input id="pin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="100" required><button id="unlock" class="primary" type="submit">Открыть пульт →</button></form></section>
+  <section id="connected" hidden>
+    <div class="connection"><span id="identity"></span><span id="hostStatus"></span></div>
+    <section id="deck" class="panel deck" hidden>
+      <div class="section-title"><span class="eyebrow">СЕЙЧАС В ЭФИРЕ</span><span id="airStatus">Пауза</span></div>
+      <h2 id="trackTitle">Очередь пока пуста</h2><p id="trackBy"></p>
+      <input id="seek" aria-label="Позиция воспроизведения" type="range" min="0" max="1" value="0" step="1"><div class="time"><span id="elapsed">0:00</span><span id="duration">0:00</span></div>
+      <div class="transport"><button id="previous" type="button" aria-label="Предыдущий трек">❮❮</button><button id="play" type="button" class="primary">Начать эфир</button><button id="next" type="button" aria-label="Следующий трек">❯❯</button></div>
+      <p class="hint">Пульт управляет радио в приложении у слушателей.</p>
+    </section>
+    <section class="panel upload"><div class="section-title"><h2>Добавить песни</h2><span class="pill">В конец очереди</span></div><p>Выбери один или несколько аудиофайлов из памяти телефона.</p>
+      <label class="file-button" for="files"><span aria-hidden="true">＋</span> Выбрать музыку<input id="files" type="file" multiple accept="audio/*,.mp3,.m4a,.flac,.wav,.ogg,.aac,.opus,.mp4,.webm"></label>
+      <div id="uploads" aria-live="polite"></div><p class="hint">Музыка сохранится на ПК Fifflaren. Не закрывай эту страницу до конца загрузки.</p>
+    </section>
+    <section id="queuePanel" class="panel" hidden><div class="section-title"><h2>Общая очередь</h2><span id="queueCount" class="pill">0</span></div><input id="search" type="search" placeholder="Найти песню в очереди" aria-label="Поиск по очереди"><ol id="queue"></ol><p id="queueHint" class="hint"></p></section>
+    <button id="disconnect" class="text-button" type="button">Отключить этот телефон</button>
+  </section>
+  <footer>Музыка хранится на ПК Fifflaren.<br>Для загрузки и эфира Support Hub на нём должен работать.</footer>
+</main></body></html>

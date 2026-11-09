@@ -69,7 +69,7 @@ function installAudience(io,authenticate){
     socket.on('disconnect',()=>listening(false));
   });
 }
-function install({app,io,mongoose,authenticate}){
+function install({app,io,mongoose,authenticate,mobileOptions={}}){
   if(io)installAudience(io,authenticate);
   const station=mongoose.connection.collection('radio_station'), audio=mongoose.connection.collection('radio_audio');
   const get=async()=>await station.findOne({_id:'live'})||{_id:'live',...empty()};
@@ -79,10 +79,12 @@ function install({app,io,mongoose,authenticate}){
     res.set('Cache-Control','no-store').json({success:true,...payload,...at,rev:s.rev,now});
   };
   function guard(owner){return async(req,res,next)=>{try{
-    const u=await authenticate(String(req.headers.authorization||'').replace(/^Bearer /,''));
+    const token=String(req.headers.authorization||'').replace(/^Bearer /,'');
+    const phone=token.startsWith('rph_')?await mobile.authorize(req):null;
+    const u=phone?.user||await authenticate(token);
     if(!u||(owner&&u.username.toLowerCase()!=='fifflaren'))return res.status(403).json({success:false,message:'Нет доступа к эфиру.'});
-    req.radioName=u.username;next();
-  }catch{res.status(503).json({success:false,message:'Сервис эфира недоступен.'});}};}
+    req.radioName=u.username;phone?.observe(res);next();
+  }catch(e){res.status(e.status||503).json({success:false,message:e.status?e.message:'Сервис эфира недоступен.'});}};}
   async function commit(s,cmd){
     let next;try{next=change(s,cmd,Date.now());}catch(e){e.status=400;throw e;}
     const {_id,...fields}=next;
@@ -98,6 +100,7 @@ function install({app,io,mongoose,authenticate}){
   }
   const error=(res,e)=>res.status(e.status||503).json({success:false,message:e.status?e.message:/quota|space limit|out of.*space/i.test(e.message)?'Хранилище сервера заполнено.':'Сервис радио временно недоступен.'});
   const origin=io?require('./radio-origin').create({io,mongoose,authenticate,enqueue,get,mediaType:media.mediaType}):null;
+  const mobile=require('./radio-mobile').install({app,authenticate,...mobileOptions,online:()=>{if(!origin)throw Error('ПК не подключён.');return origin.online();}});
   const storage=media.create({app,mongoose,guard,get,enqueue,send,error,origin});
   app.get('/api/radio/state',guard(false),async(req,res)=>{try{
     const s=await get();send(res,s,req.query.compact==='1'||req.query.since===String(s.rev));

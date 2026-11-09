@@ -1,0 +1,68 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),http=require('node:http'),os=require('node:os');
+const {chromium}=require('playwright'),express=require('express'),mongoose=require('mongoose'),{Server}=require('socket.io'),{MongoMemoryServer}=require('mongodb-memory-server');
+const root=path.resolve(__dirname,'../../fifflaren-app'),radio=require('../radio-service');
+const out=process.env.RADIO_PHONE_OUTPUT||path.join(os.tmpdir(),'radio-phone-preview');fs.mkdirSync(out,{recursive:true});
+function wav(){const n=16000*30,b=Buffer.alloc(44+n*2);b.write('RIFF');b.writeUInt32LE(b.length-8,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(16000,24);b.writeUInt32LE(32000,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(n*2,40);for(let i=0;i<n;i++)b.writeInt16LE(Math.round(1500*Math.sin(i*2*Math.PI*440/16000)),44+i*2);return b;}
+(async()=>{
+ let db,io,browser,stopPC;const dir=fs.mkdtempSync(path.join(os.tmpdir(),'radio-phone-test-'));
+ const handlers=new Map(),events=new Map(),sender={isDestroyed:()=>false},event={sender};
+ try{
+  db=await MongoMemoryServer.create({instance:{launchTimeout:60000},binary:{version:'8.2.6'}});await mongoose.connect(db.getUri());
+  const app=express(),server=http.createServer(app);app.use(express.json());io=new Server(server);await new Promise(r=>server.listen(0,'127.0.0.1',r));const url='http://127.0.0.1:'+server.address().port;
+  radio.install({app,io,mongoose,mobileOptions:{publicUrl:url},authenticate:async t=>['fifflaren','mira','leo'].includes(t)?{username:t}:null});
+  const legacy='000000000000000000000001',bytes=wav();await mongoose.connection.collection('radio_audio').insertOne({_id:legacy,mime:'audio/wav',data:bytes});
+  await mongoose.connection.collection('radio_station').insertOne({_id:'live',...radio.empty(),current:legacy,queue:[{id:legacy,title:'Вечерний эфир · Support Hub',duration:30}],playing:true,anchor:Date.now()});
+  const tab=fs.readFileSync(path.join(root,'index.html'),'utf8').split('<div id="tab-radio"')[1].split('<div id="tab-admin"')[0];
+  const css=['app-theme.css','radio.css','media-volume.css','cinema.css','terra.css','radio-qr.css'],scripts=['media-volume.js','radio-qr.js','radio.js'];
+  app.get('/',(_req,res)=>res.send('<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+css.map(f=>'<link rel="stylesheet" href="/'+f+'">').join('')+'<body class="terra"><header class="hub-header"><button class="hub-menuToggle">☰</button><div class="hub-heading"><small>SUPPORT HUB / РАБОЧЕЕ ПРОСТРАНСТВО</small><h1>Смена и колы</h1></div><div class="hub-tools"></div></header><button id="radioTabButton">Радио</button><div id="tab-radio"'+tab+'<script src="/socket.io/socket.io.js"></script><script>window.HubCinema={start(){},stop(){},open(){}};</script>'+scripts.map(f=>'<script src="/'+f+'"></script>').join('')+'<script>const nick=location.hash.slice(1);window.ready=false;HubRadio.start({username:nick,token:nick,server:location.origin,io,radioPC:{connect:async token=>{const r=await qaConnect(token);ready=true;return r;},stop:()=>{}}});</script></body></html>'));
+  for(const f of [...css,...scripts])app.get('/'+f,(_req,res)=>res.sendFile(path.join(root,f)));
+  stopPC=require(path.join(root,'radio-host-main')).install({serverUrl:url,app:{getPath:()=>dir,on(){}},getWindow:()=>({isDestroyed:()=>false,webContents:sender}),ipcMain:{on:(n,f)=>events.set(n,f),handle:(n,f)=>handlers.set(n,f)}});
+  browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'});const errors=[];
+  const owner=await browser.newPage({viewport:{width:1500,height:920}}),worker=await browser.newPage({viewport:{width:1280,height:900}}),phone=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true}),dj=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+  for(const page of [owner,worker,phone,dj])page.on('pageerror',e=>errors.push(e.message));
+  for(const page of [owner,worker])await page.exposeFunction('qaConnect',token=>handlers.get('radio-pc-connect')(event,token));
+  const req=async(route,token,method='GET',body)=>{const r=await fetch(url+'/api/radio/'+route,{method,headers:{Authorization:'Bearer '+token,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});return {status:r.status,data:await r.json()};};
+  await owner.goto(url+'/#fifflaren');await owner.waitForFunction(()=>ready);await worker.goto(url+'/#mira');
+  assert(await worker.locator('#radioPhoneUpload').isVisible());assert(await worker.locator('#radioPhoneDJ').isHidden());assert(await owner.locator('#radioPhoneDJ').isVisible());
+  assert.equal(await owner.locator('#radioAddSong').evaluate(e=>e.nextElementSibling.id),'radioPhoneUpload');assert.equal(await owner.locator('#radioPhoneUpload').evaluate(e=>e.nextElementSibling.id),'radioPhoneDJ');
+  const issued=worker.waitForResponse(r=>r.url().endsWith('/mobile/pairs')&&r.request().method()==='POST');await worker.click('#radioPhoneUpload');const uploadPair=await (await issued).json();
+  await worker.locator('#radioQrImage').waitFor({state:'visible'});await worker.screenshot({path:path.join(out,'desktop-upload-qr.png')});
+  fs.writeFileSync(path.join(out,'qr-test.png'),Buffer.from(uploadPair.qr.split(',')[1],'base64'));fs.writeFileSync(path.join(out,'qr-test-url.txt'),uploadPair.url);
+  const png=require('pngjs').PNG.sync.read(Buffer.from(uploadPair.qr.split(',')[1],'base64'));
+  assert.equal(require('jsqr')(new Uint8ClampedArray(png.data),png.width,png.height).data,uploadPair.url);
+  await phone.goto(uploadPair.url);await phone.locator('#connected').waitFor();assert(await phone.locator('#gate').isHidden());assert.equal(new URL(phone.url()).hash,'');
+  await phone.screenshot({path:path.join(out,'phone-upload.png'),fullPage:true});
+  const phoneToken=await phone.evaluate(()=>JSON.parse(sessionStorage.getItem('hub-radio-phone')).token);
+  assert.equal((await req('control',phoneToken,'POST',{op:'pause',rev:0})).status,403);assert.equal((await req('state',phoneToken)).status,403);
+  await phone.locator('#files').setInputFiles([{name:'Morning Light.wav',mimeType:'audio/wav',buffer:bytes},{name:'Наша команда.wav',mimeType:'audio/wav',buffer:bytes}]);
+  await phone.waitForFunction(()=>document.querySelector('#notice').textContent.includes('Добавлено в очередь: 2 из 2'),null,{timeout:60000});
+  let current=(await req('state','fifflaren')).data;assert.equal(current.queue.length,3);assert.equal(current.current,legacy);assert(current.playing);
+  for(const t of current.queue.slice(1)){assert.equal(t.addedBy,'mira');assert.deepEqual(fs.readFileSync(path.join(dir,'radio-library',t.id+'.audio')),bytes);}
+  assert.equal(await mongoose.connection.collection('radio_parts').countDocuments({}),0);
+  await worker.waitForFunction(()=>document.querySelectorAll('#radioQrUploads .radio-qr-progress').length===2);assert((await worker.locator('#radioQrUploads').textContent()).includes('В очереди'));
+  await phone.screenshot({path:path.join(out,'phone-upload-done.png'),fullPage:true});
+  await worker.click('#radioQrClose');await worker.setViewportSize({width:850,height:700});assert(await worker.locator('#radioPhoneUpload').isVisible());assert(await worker.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  const issueDJ=owner.waitForResponse(r=>r.url().endsWith('/mobile/pairs')&&r.request().method()==='POST');await owner.click('#radioPhoneDJ');const djPair=await (await issueDJ).json();await owner.locator('#radioQrImage').waitFor({state:'visible'});
+  await owner.screenshot({path:path.join(out,'desktop-dj-qr.png')});await dj.goto(djPair.url);assert(await dj.locator('#gate').isVisible());
+  await dj.fill('#pin','wrong');await dj.click('#unlock');await dj.waitForFunction(()=>document.querySelector('#notice').textContent.includes('Неверный пароль'));assert(await dj.locator('#deck').isHidden());
+  await dj.fill('#pin','19971234');await dj.click('#unlock');await dj.locator('#deck').waitFor();await dj.waitForFunction(()=>document.querySelector('#queueCount').textContent==='3');
+  await dj.screenshot({path:path.join(out,'phone-dj.png'),fullPage:true});assert(await dj.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await dj.click('#play');await dj.waitForFunction(()=>document.querySelector('#play').textContent==='Начать эфир');assert.equal((await req('state','fifflaren')).data.playing,false);
+  await dj.waitForTimeout(200);await dj.click('#next');await dj.waitForFunction(()=>document.querySelector('#trackTitle').textContent==='Morning Light');
+  await dj.waitForTimeout(200);await dj.locator('#seek').fill('12');await dj.locator('#seek').dispatchEvent('change');await dj.waitForTimeout(300);assert.equal((await req('state','fifflaren')).data.position,12);
+  await dj.click('#queue li:last-child button:first-child');await dj.waitForFunction(()=>document.querySelector('#trackTitle').textContent==='Наша команда');assert((await req('state','fifflaren')).data.playing);
+  await dj.waitForTimeout(200);await dj.click('#queue li:last-child button:nth-child(2)');await dj.waitForFunction(()=>document.querySelector('#queue li:nth-child(2) strong').textContent.includes('Наша команда'));
+  await dj.waitForTimeout(200);await dj.click('#queue li:last-child button:last-child');await dj.waitForFunction(()=>document.querySelector('#queueCount').textContent==='2');
+  await dj.reload();await dj.locator('#deck').waitFor();assert(await dj.locator('#gate').isHidden());
+  await owner.click('#radioQrRevoke');await dj.waitForFunction(()=>document.querySelector('#connected').hidden,null,{timeout:10000});
+  // Host outage does not enqueue half a file; retry resumes the same upload after reconnect.
+  stopPC();await phone.locator('#files').setInputFiles({name:'Reconnect.wav',mimeType:'audio/wav',buffer:bytes});
+  await phone.waitForFunction(()=>document.querySelector('#uploads').textContent.includes('Восстанавливаем'),null,{timeout:10000});await handlers.get('radio-pc-connect')(event,'fifflaren');
+  await phone.waitForFunction(()=>document.querySelector('#notice').textContent.includes('Добавлено в очередь: 1 из 1'),null,{timeout:60000});
+  current=(await req('state','fifflaren')).data;assert.equal(current.queue.filter(t=>t.title==='Reconnect').length,1);
+  await worker.click('#radioPhoneUpload');await worker.click('#radioQrRevoke');await phone.waitForFunction(()=>document.querySelector('#connected').hidden,null,{timeout:10000});
+  assert.deepEqual(errors,[]);console.log('PASS: real desktop QR buttons, employee no-password upload, isolated phone grants, two files persisted byte-for-byte on Fifflaren PC, queue append without interrupting music, desktop progress, DJ password and play/pause/skip/seek/select/reorder/remove, phone reload, revocation, host outage retry, responsive mobile and desktop.');
+ }finally{await browser?.close();stopPC?.();if(io)await new Promise(r=>io.close(r));await mongoose.disconnect();await db?.stop();
+  const safe=path.resolve(dir);assert(safe.startsWith(path.resolve(os.tmpdir())+path.sep)&&path.basename(safe).startsWith('radio-phone-test-'));fs.rmSync(safe,{recursive:true,force:true});}
+})().catch(e=>{console.error(e);process.exitCode=1;});

@@ -59,7 +59,7 @@ function create({io,mongoose,authenticate,enqueue,get,mediaType}){
       await rpc('part',{id:t._id,n,bytes});res.json({success:true});
     }catch(e){error(res,e);}});
     app.post('/api/radio/uploads/:id/finish',guard(false),async(req,res)=>{try{
-      const t=await owned(req.params.id,req.radioName),complete=await rpc('finish',{id:t._id});await save(complete);send(res,await get(),req.radioName.toLowerCase()!=='fifflaren');
+      const t=await owned(req.params.id,req.radioName),complete=await rpc('finish',{id:t._id});await save(complete);send(res,await get(),req.radioName.toLowerCase()!=='fifflaren'||req.radioMobileMode==='upload');
     }catch(e){error(res,e);}});
   }
   async function stream(req,res,m,range){
