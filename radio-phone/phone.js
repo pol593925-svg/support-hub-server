@@ -1,7 +1,7 @@
 (()=>{
   'use strict';
   const $=id=>document.getElementById(id),KEY='hub-radio-phone',PENDING=KEY+'-pair';
-  let session=null,pair=null,state=null,busy=false,polling=false,controlBusy=false,uploadAbort=null,queueRev=-1;
+  let session=null,pair=null,state=null,busy=false,polling=false,controlBusy=false,uploadAbort=null,queueRev=-1,linkForm;
   const say=(text,error=false)=>{$('notice').textContent=text;$('notice').classList.toggle('error',error);};
   const time=s=>Math.floor((s||0)/60)+':'+String(Math.floor((s||0)%60)).padStart(2,'0');
   function read(key){try{return JSON.parse(sessionStorage.getItem(key));}catch{return null;}}
@@ -9,9 +9,9 @@
   const fragment=new URLSearchParams(location.hash.slice(1));
   if(fragment.has('code')){pair={id:fragment.get('id'),code:fragment.get('code'),mode:fragment.get('mode')};save(PENDING,pair);save(KEY,null);history.replaceState(null,'',location.pathname);}
   else{session=read(KEY);pair=read(PENDING);}
-  function lock(message){session=null;state=null;save(KEY,null);uploadAbort?.abort();$('connected').hidden=true;$('gate').hidden=true;say(message,true);}
+  function lock(message){linkForm?.destroy();linkForm=null;session=null;state=null;save(KEY,null);uploadAbort?.abort();$('connected').hidden=true;$('gate').hidden=true;say(message,true);}
   async function api(route,{method='GET',body,signal,auth=true}={}){
-    const headers={};if(auth&&session)headers.Authorization='Bearer '+session.token;
+    const headers={'X-SupportHub-Radio':'youtube-v1'};if(auth&&session)headers.Authorization='Bearer '+session.token;
     if(body!==undefined)headers['Content-Type']=body instanceof Blob?'application/octet-stream':'application/json';
     const controller=new AbortController(),cancel=()=>controller.abort();if(signal?.aborted)cancel();signal?.addEventListener('abort',cancel,{once:true});const timeout=setTimeout(cancel,35000);
     try{
@@ -21,7 +21,8 @@
     }finally{clearTimeout(timeout);signal?.removeEventListener('abort',cancel);}
   }
   function showConnected(){
-    const dj=session.mode==='dj';$('gate').hidden=true;$('connected').hidden=false;$('deck').hidden=!dj;$('queuePanel').hidden=!dj;
+    const dj=session.mode==='dj';
+    linkForm?.destroy();linkForm=HubYouTube.mountLinkForm($('youtubeForm'),{server:location.origin,api:(route,body)=>api(route,{method:'POST',body}),allowNow:dj,onAdded:s=>{if(dj){state=s;draw();}}});$('gate').hidden=true;$('connected').hidden=false;$('deck').hidden=!dj;$('queuePanel').hidden=!dj;
     $('modeLabel').textContent=dj?'FIFFLAREN / DJ-ПУЛЬТ':'МУЗЫКА ОБЪЕДИНЯЕТ';
     $('pageTitle').textContent=dj?'Ты задаёшь ритм.':'Твои песни. Наш общий эфир.';
     $('intro').textContent=dj?'Весь эфир — под рукой. Выбирай треки и управляй очередью.':'Добавляй музыку с телефона в очередь команды.';
@@ -49,7 +50,7 @@
     const search=$('search').value.trim().toLowerCase(),found=state.queue.map((t,i)=>({t,i})).filter(({t})=>t.title.toLowerCase().includes(search));
     for(const {t,i} of found.slice(0,100)){
       const li=document.createElement('li'),title=document.createElement('strong'),meta=document.createElement('small'),actions=document.createElement('div');
-      li.classList.toggle('on-air',t.id===state.current);title.textContent=(i+1)+'. '+t.title;meta.textContent=time(t.duration)+(t.addedBy?' · '+t.addedBy:'');actions.className='queue-actions';
+      li.classList.toggle('on-air',t.id===state.current);title.textContent=(i+1)+'. '+t.title;meta.textContent=(t.source==='youtube'?'YouTube · ':'Файл · ')+time(t.duration)+(t.addedBy?' · '+t.addedBy:'');actions.className='queue-actions';
       actions.append(action('В эфир','select',t.id),action('↑','up',t.id,i===0),action('↓','down',t.id,i===state.queue.length-1),action('Из очереди','remove',t.id));
       li.append(title,meta,actions);list.append(li);
     }
@@ -107,6 +108,9 @@
     }if(session){say('Добавлено в очередь: '+success+' из '+files.length+'.',success!==files.length);await poll();}}
     finally{uploadAbort=null;$('files').disabled=false;$('files').value='';}
   }
+  function sourceTab(youtube){$('youtubePanel').hidden=!youtube;$('filePanel').hidden=youtube;$('sourceYouTube').setAttribute('aria-selected',String(youtube));$('sourceFiles').setAttribute('aria-selected',String(!youtube));if(!youtube){linkForm?.destroy();linkForm=null;}else if(!linkForm&&session){linkForm=HubYouTube.mountLinkForm($('youtubeForm'),{server:location.origin,api:(route,body)=>api(route,{method:'POST',body}),allowNow:session.mode==='dj',onAdded:s=>{if(session?.mode==='dj'){state=s;draw();}}});}}
+  $('sourceYouTube').onclick=()=>sourceTab(true);$('sourceFiles').onclick=()=>sourceTab(false);
+  for(const button of [$('sourceYouTube'),$('sourceFiles')])button.onkeydown=e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();const youtube=button.id==='sourceFiles';sourceTab(youtube);$(youtube?'sourceYouTube':'sourceFiles').focus();}};
   $('pinForm').onsubmit=connect;$('files').onchange=upload;$('search').oninput=drawQueue;
   $('play').onclick=()=>control(state?.playing?'pause':'play');$('previous').onclick=()=>control('previous');$('next').onclick=()=>control('next');
   $('seek').onchange=()=>control('seek',{id:state?.current,position:Number($('seek').value)});

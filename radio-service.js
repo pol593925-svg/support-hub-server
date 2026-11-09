@@ -69,12 +69,14 @@ function installAudience(io,authenticate){
     socket.on('disconnect',()=>listening(false));
   });
 }
-function install({app,io,mongoose,authenticate,mobileOptions={}}){
+function install({app,io,mongoose,authenticate,mobileOptions={},youtubeOptions={}}){
   if(io)installAudience(io,authenticate);
   const station=mongoose.connection.collection('radio_station'), audio=mongoose.connection.collection('radio_audio');
   const get=async()=>await station.findOne({_id:'live'})||{_id:'live',...empty()};
   const send=(res,s,compact=false)=>{
     const now=Date.now(),at=live(s,now);
+    const supportsYouTube=res.req?.get('X-SupportHub-Radio')==='youtube-v1';
+    if(!supportsYouTube){if(s.queue.find(t=>t.id===at.current)?.source==='youtube')Object.assign(at,{current:null,playing:false,position:0});s={...s,queue:s.queue.filter(t=>t.source!=='youtube')};}
     const payload=compact?{track:s.queue.find(t=>t.id===at.current)||null}:{queue:s.queue};
     res.set('Cache-Control','no-store').json({success:true,...payload,...at,rev:s.rev,now});
   };
@@ -102,6 +104,7 @@ function install({app,io,mongoose,authenticate,mobileOptions={}}){
   const origin=io?require('./radio-origin').create({io,mongoose,authenticate,enqueue,get,mediaType:media.mediaType}):null;
   const mobile=require('./radio-mobile').install({app,authenticate,...mobileOptions,online:()=>{if(!origin)throw Error('ПК не подключён.');return origin.online();}});
   const storage=media.create({app,mongoose,guard,get,enqueue,send,error,origin});
+  require('./radio-youtube').install({...youtubeOptions,app,guard,get,commit,send,error});
   app.get('/api/radio/state',guard(false),async(req,res)=>{try{
     const s=await get();send(res,s,req.query.compact==='1'||req.query.since===String(s.rev));
   }catch(e){error(res,e);}});

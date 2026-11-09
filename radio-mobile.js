@@ -77,7 +77,8 @@ function install({app,authenticate,online,now=Date.now,publicUrl=process.env.RAD
     const upload=/^\/api\/radio\/uploads\/([a-f0-9]{24})(?:\/(parts)\/(\d+)|\/(finish))?$/.exec(route);
     const allowedUpload=upload&&((method==='PUT'&&!upload[4])||(method==='POST'&&upload[4]));
     const control=p.mode==='dj'&&method==='POST'&&route==='/api/radio/control';
-    if(!allowedUpload&&!control&&!(p.mode==='dj'&&method==='GET'&&route==='/api/radio/state'))throw fail(403,'Этот QR разрешает только добавление песен.');
+    const youtube=method==='POST'&&['/api/radio/youtube/preview','/api/radio/youtube/queue'].includes(route);
+    if(!allowedUpload&&!control&&!youtube&&!(p.mode==='dj'&&method==='GET'&&route==='/api/radio/state'))throw fail(403,'Этот QR разрешает только добавление песен.');
     if(control){if(p.lastControl&&now()-p.lastControl<150)throw fail(429,'Слишком быстро. Подожди секунду.');p.lastControl=now();}
     req.radioMobileMode=p.mode;
     return {user,observe(res){
@@ -98,7 +99,7 @@ function install({app,authenticate,online,now=Date.now,publicUrl=process.env.RAD
   const files=path.join(__dirname,'radio-phone');
   app.use('/radio-phone',(_req,res,next)=>{
     res.set({'Referrer-Policy':'no-referrer','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY',
-      'Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; media-src blob:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"});next();
+      'Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-src 'self'; media-src blob:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"});next();
   },express.static(files,{index:'index.html',dotfiles:'deny'}));
   return {authorize};
 }

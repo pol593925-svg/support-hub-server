@@ -64,6 +64,7 @@ function create({mongoose,app,guard,get,enqueue,send,error,kind='radio',origin,m
   }
   // Older releases stored their audio as one BSON value, and their titles in the station queue.
   async function remember(items){
+    items=items.filter(t=>t.source!=='youtube');
     if(!items.length)return;
     await tracks.bulkWrite(items.map(t=>({updateOne:{filter:{_id:t.id},update:{$setOnInsert:{title:t.title,duration:t.duration,legacy:true,ready:true,queuedOnce:true}},upsert:true}})),{ordered:false});
   }
@@ -151,6 +152,7 @@ function create({mongoose,app,guard,get,enqueue,send,error,kind='radio',origin,m
     await pipeline(Readable.from(read()),res);
   }catch(e){if(!res.headersSent&&!res.destroyed)error(res,e);else if(!res.destroyed)res.destroy();}});
   async function retain(item){
+    if(item.source==='youtube')return;
     await remember([item]);
     await tracks.updateOne({_id:item.id,ready:true},{$set:{queuedOnce:true}});
   }
