@@ -2489,7 +2489,7 @@ app.get('/api/karma', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`Сервер Support Hub v3 запущен на порту ${PORT}`);
   // Краш-игра: первый раунд через 8 сек после старта
   setTimeout(startCrashRound, 8000);
