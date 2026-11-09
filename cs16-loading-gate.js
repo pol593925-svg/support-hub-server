@@ -24,6 +24,7 @@ function create({state,publish,start,abort,fill=()=>{},now=Date.now,schedule=set
   if(roster().some(([,p])=>!p.bot))fill();
   const members=reconcile(),humans=members.filter(([,p])=>!p.bot);
   if(!humans.length){cancel();abort('Подготовка отменена: в командах не осталось игроков.');return;}
+  if(state.botFill===false&&!['t','ct'].every(team=>members.some(([,p])=>p.team===team))){cancel();abort('Подготовка отменена: одна команда осталась без участников.');return;}
   const ready=humans.every(([id])=>gate.progress.get(id).ready);
   if(ready&&!gate.startAt)gate.startAt=now()+countdown;
   if(!ready)gate.startAt=0;

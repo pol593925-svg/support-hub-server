@@ -25,9 +25,11 @@
     const absorbed=protectedHit?Math.min(armor*2,raw*(1-w.penetration)):0;
     return {damage:Math.max(1,Math.round(raw-absorbed)),armorUsed:Math.min(armor,Math.ceil(absorbed/2))};
   }
-  function spread(w, {scoped=false,moving=false,airborne=false,crouched=false,bloom=0,shots=0}={}) {
-    const base=scoped&&w.scope?(w.spreadScoped||.03):w.spread;
-    return (base+(airborne?3.5:moving?1.4:0)+bloom*.22+shots*(w.auto?.13:.04))*(crouched?.7:1);
+  function spread(w, {scoped=false,moving=false,airborne=false,crouched=false}={}) {
+    // Stable grouping even during sustained fire; movement still has a small cost.
+    if(w.melee || !w.spread)return 0;
+    const base=scoped&&w.scope?(w.spreadScoped??.03)*.5:w.spread*.35;
+    return (base+(airborne?.40:moving?.12:0))*(crouched?.75:1);
   }
   function direction(yaw,pitch,degrees=0,random=Math.random) {
     const c=Math.cos(pitch),s=Math.sin(pitch),sy=Math.sin(yaw),cy=Math.cos(yaw);

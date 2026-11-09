@@ -10,6 +10,10 @@ function fixture(){
  function ready(id,more={}){const d=gate.snapshot();return gate.report(id,{id:d.id,map:d.map,percent:100,stage:'ready',ready:true,...more});}
  gate.begin();return {gate,state,events,errors,advance,ready,timers,started:()=>started};
 }
+test('without bots a side leaving during loading cancels the countdown',()=>{
+ const f=fixture();f.state.botFill=false;f.state.players.delete('bot');f.ready('a');f.ready('b');f.advance(250);
+ f.state.players.delete('b');f.advance(5000);assert.equal(f.started(),0);assert.equal(f.state.phase,'lobby');assert.equal(f.errors.length,1);assert.equal(f.timers.size,0);
+});
 test('round clock stays stopped until every human is ready; bots and spectators never block',()=>{
  const f=fixture();assert.equal(f.state.freezeEnds,0);assert.equal(f.gate.snapshot().players.length,3);
  f.ready('a');f.advance(50000);assert.equal(f.started(),0);assert.equal(f.state.phase,'loading');

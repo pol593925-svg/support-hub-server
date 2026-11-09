@@ -8,7 +8,7 @@ function guard(socket){let lastNotice=-Infinity;socket.use(([event,item],next)=>
  next();
 });}
 function count(state,team){return [...state.players.values()].filter(p=>p.team===team).length;}
-function fill(state,add){normalize(state);for(const team of ['t','ct'])for(let missing=TEAM_SIZE-count(state,team);missing>0;missing--)add(team);}
-function canStart(state){return [...state.players.values()].some(p=>!p.bot&&['t','ct'].includes(p.team));}
+function fill(state,add){normalize(state);if(state.botFill===false)return;for(const team of ['t','ct'])for(let missing=TEAM_SIZE-count(state,team);missing>0;missing--)add(team);}
+function canStart(state){return [...state.players.values()].some(p=>!p.bot&&['t','ct'].includes(p.team))&&(state.botFill!==false||count(state,'t')>0&&count(state,'ct')>0);}
 function replacementBot(state,team){return [...state.players.entries()].find(([,p])=>p.bot&&p.team===team)?.[0]||null;}
 module.exports={TEAM_SIZE,MODE,MAPS,normalize,count,fill,canStart,replacementBot,guard};

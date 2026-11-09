@@ -4647,7 +4647,7 @@ function cs16PrepareMatch(){
 function cs16State() {
   return {
     phase: cs16.phase, mode: cs16.mode, round: cs16.round,
-    map: cs16.map, gm: cs16.gm, army:!!cs16.army, // 3.24.0
+    map: cs16.map, gm: cs16.gm, army:!!cs16.army, botFill:cs16.botFill!==false, // 3.24.0
     scores: cs16.scores, winner: cs16.winner,cq:cs16.gm==='cq'?cs16.cq:null,
     host: (cs16HostId() && cs16.players.get(cs16HostId()) || {}).nick || null,
     freezeEnds: cs16.freezeEnds, roundEnds: cs16.roundEnds, buyUntil: cs16.buyUntil, loading:cs16Loading.snapshot(),
@@ -5017,7 +5017,7 @@ function cs16Remove(socket) {
   const p = cs16.players.get(socket.id);
   if (!p) return;
   if(p.frontSeat!=null)cs16Front.leave(p);cs16.players.delete(socket.id);
-  if(![...cs16.players.values()].some(u=>!u.bot)){cs16.players.clear();cs16Front.clear();cs16.army=false;}
+  if(![...cs16.players.values()].some(u=>!u.bot)){cs16.players.clear();cs16Front.clear();cs16.army=false;cs16.botFill=true;}
   io.emit('cs16_leave', { nick: p.nick });
   if (cs16.players.size === 0) { cs16ClearTimers(); cs16.phase = 'lobby'; cs16.round = 0; cs16.scores = { t: 0, ct: 0 }; cs16.mode = 5; cs16.winner = null; return; }
   if (cs16.phase !== 'lobby' && cs16.phase !== 'matchend') cs16CheckWipe();
@@ -5086,7 +5086,7 @@ io.on('connection', (socket) => {
 
   socket.on('cs16_start', () => {
     if (socket.id !== cs16HostId() || cs16.phase !== 'lobby') return;
-    if(!CS16Rounds.canStart(cs16)){socket.emit('cs16_err','Вступи в команду. Пустые места займут боты.');return;}
+    if(!CS16Rounds.canStart(cs16)){socket.emit('cs16_err',cs16.botFill===false?'Для боя без автозаполнения нужен хотя бы один участник в T и CT.':'Вступи в команду. Пустые места займут боты.');return;}
     CS16Rounds.fill(cs16,team=>cs16BotAdd(socket,team));
     cs16.scores = { t: 0, ct: 0 }; cs16.round = 0; cs16.winner = null; cs16.swapped = false;
     for (const p of cs16.players.values()) { cs16Magic.reset(p);p.money = 800; p.kills = 0; p.deaths = 0; p.armor = 0; p.kit = false; p.ggIdx = 0; p.weapon = null; p.rpgAmmo = 0; }
@@ -5111,9 +5111,19 @@ io.on('connection', (socket) => {
     if (cs16TeamCount('t') >= 5 && cs16TeamCount('ct') >= 5) { io.to(socket.id).emit('cs16_err', 'Команды заполнены — максимум 5×5'); return; }
     cs16BotAdd(socket);
   });
+  socket.on('cs16_botclear', () => {
+    if(socket.id!==cs16HostId()||cs16.phase!=='lobby')return;
+    cs16.botFill=false;
+    for(const [id,p]of cs16.players)if(p.bot){cs16.players.delete(id);io.emit('cs16_leave',{nick:p.nick});}
+    cs16Broadcast();
+  });
+  socket.on('cs16_botfill', value => {
+    if(socket.id!==cs16HostId()||cs16.phase!=='lobby'||typeof value!=='boolean')return;
+    cs16.botFill=value;cs16Broadcast();
+  });
   socket.on('cs16_botdel', () => {
     if (socket.id !== cs16HostId() || cs16.phase !== 'lobby') return;
-    cs16BotDel();
+    cs16.botFill=false;cs16BotDel();cs16Broadcast();
   });
 
   // Позиция — просто ретрансляция остальным (+ запоминаем для ботов)
@@ -5478,5 +5488,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '5.4.0', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '5.4.1', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });
