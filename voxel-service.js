@@ -163,6 +163,26 @@ module.exports=function install({io,mongoose,authenticate}){
    }).catch(()=>endVisit(p)),FLOWER_MS);visit.timer.unref();return {id,spot,ms:FLOWER_MS};
   }));
   rpc('florist_cancel',data=>enqueue(()=>{const p=players.get(socket.id);if(!data.id||p?.flowerVisit?.id===data.id)endVisit(p);return {};}));
+  rpc('structure',data=>enqueue(async()=>{
+   if(socket.data.nick!=='fifflaren')throw Error('Постройка доступна только Fifflaren.');
+   if(data.kind!=='sakura_village'||!C.validCell(data.at))throw Error('Неверные параметры постройки');
+   const w=await world(),rows=require('./voxel-structures').buildVillage(C,...data.at,w.seed),byChunk=new Map();
+   for(const row of rows){const key=C.chunk(row[0],row[2]).join(',');if(!byChunk.has(key))byChunk.set(key,[]);byChunk.get(key).push(row);}
+   let written=0;
+   for(const [chunkKey,entries]of byChunk){
+    const[cx,cz]=chunkKey.split(',').map(Number);let change=null;
+    await mongoose.connection.transaction(async session=>{
+     const doc=await Chunk.findOne({world:storage(w),cx,cz}).session(session).lean(),blocks={};
+     for(const[x,y,z,id]of entries){const key=C.key(x,y,z);if((doc?.blocks?.[key]??C.terrain(x,y,z,w.seed))!==id)blocks[key]=id;}
+     if(!Object.keys(blocks).length)return;
+     const set={fluidPending:true};for(const[key,id]of Object.entries(blocks))set['blocks.'+key]=id;
+     const saved=await Chunk.findOneAndUpdate({world:storage(w),cx,cz},{$set:set,$inc:{revision:1}},{upsert:true,returnDocument:'after',session}).lean();
+     change={cx,cz,revision:saved.revision,blocks};
+    });
+    if(change){written+=Object.keys(change.blocks).length;ns.to(WORLD).emit('blocks',change);}
+   }
+   return {written,generated:rows.length};
+  }));
   rpc('palette',data=>enqueue(async()=>{
    const p=live(socket),id=data.id,b=C.blocks[id];if(socket.data.nick!=='fifflaren')throw Error('Палитра доступна Fifflaren.');
    if(!Number.isInteger(id)||!b||!b.color||b.unbreakable||C.fluid(id)||[26,27,28].includes(id))throw Error('Недоступный строительный блок.');

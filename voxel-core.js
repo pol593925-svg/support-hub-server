@@ -9,6 +9,10 @@
   12:{name:'Вода',color:'#428ab8',transparent:true,fluid:true},13:{name:'Основание',color:'#414847',unbreakable:true},14:{name:'Верстак',color:'#9b713e'},15:{name:'Печь',color:'#646967'},16:{name:'Светокамень',color:'#eac878'},
   17:{name:'Золотая руда',color:'#c6aa54',tool:3,drop:108},18:{name:'Кристальная руда',color:'#55b5ba',tool:3,drop:109},19:{name:'Снег',color:'#e2ebeb'},20:{name:'Глина',color:'#a3a29b'},21:{name:'Кактус',color:'#54824b'},22:{name:'Хвойное бревно',color:'#59432f'},23:{name:'Хвоя',color:'#335c4a'},24:{name:'Красный песчаник',color:'#b86f46',tool:1},25:{name:'Сундук',color:'#b68642'},26:{name:'Грядка',color:'#705034'},27:{name:'Ростки пшеницы',color:'#77a340',transparent:true},28:{name:'Спелая пшеница',color:'#d6b657',transparent:true}
  };
+ // 5.6.0: блоки для аниме-деревни «Сакура»
+ blocks[37]={name:'Синяя черепица',color:'#3d6fd6',hardness:.8,kind:'pick'};
+ blocks[38]={name:'Белая штукатурка',color:'#f2ede2',hardness:.6,kind:'pick'};
+ blocks[39]={name:'Сакуровые доски',color:'#e8b7c9',hardness:2,kind:'axe'};
  for(let level=1;level<=8;level++)blocks[28+level]={name:level===8?'Падающая вода':'Текущая вода',color:'#428ab8',transparent:true,fluid:true,level};
  const items={...blocks,101:{name:'Палка'},102:{name:'Уголь'},103:{name:'Железная заготовка'},104:{name:'Деревянная кирка',tier:1},105:{name:'Каменная кирка',tier:2},106:{name:'Железная кирка',tier:3},107:{name:'Кристальная кирка',tier:4},108:{name:'Золотая заготовка'},109:{name:'Кристалл'}};
  const recipes=[
