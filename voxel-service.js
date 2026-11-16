@@ -6,7 +6,7 @@ module.exports=function install({io,mongoose,authenticate}){
  const chunkSchema=new mongoose.Schema({world:String,cx:Number,cz:Number,blocks:{type:Map,of:Number,default:{}},revision:{type:Number,default:0},fluidPending:{type:Boolean,default:false}},{versionKey:false});
  chunkSchema.index({world:1,cx:1,cz:1},{unique:true});
  chunkSchema.index({world:1,fluidPending:1});
- const playerSchema=new mongoose.Schema({_id:String,inventory:{type:Map,of:Number,default:{}},pos:[Number],spawn:[Number],health:{type:Number,default:20},hunger:{type:Number,default:20},air:{type:Number,default:10},exhaustion:{type:Number,default:0},wear:{type:Map,of:Number,default:{}},lastFlowerVisit:String,updatedAt:Date},{versionKey:false});
+ const playerSchema=new mongoose.Schema({_id:String,inventory:{type:Map,of:Number,default:{}},pos:[Number],spawn:[Number],favorites:{type:[String],default:[]},craftHistory:{type:[{recipe:String,at:Number,_id:false}],default:[]},health:{type:Number,default:20},hunger:{type:Number,default:20},air:{type:Number,default:10},exhaustion:{type:Number,default:0},wear:{type:Map,of:Number,default:{}},lastFlowerVisit:String,updatedAt:Date},{versionKey:false});
  const furnaceSchema=new mongoose.Schema({_id:String,world:String,at:[Number],jobs:[{recipe:String,readyAt:Number,out:{type:Map,of:Number},_id:false}]},{versionKey:false});
  const Chest=mongoose.model('HubVoxelChest',new mongoose.Schema({_id:String,world:String,at:[Number],contents:{type:Map,of:Number,default:{}}},{versionKey:false}));
  const Crop=mongoose.model('HubVoxelCrop',new mongoose.Schema({_id:String,world:String,at:[Number],readyAt:Number},{versionKey:false}));
@@ -17,6 +17,7 @@ module.exports=function install({io,mongoose,authenticate}){
  const initialInventory=()=>({6:16,104:1,118:3,121:3});
  const world=()=>worldPromise||(worldPromise=World.findOneAndUpdate({_id:WORLD},{$setOnInsert:{seed:758321,name:'Общий мир Support Hub',createdAt:new Date()}},{upsert:true,returnDocument:'after'}).lean().catch(e=>{worldPromise=null;throw e;}));
  const inventory=p=>Object.fromEntries(Object.entries(p.inventory||{}).filter(([,n])=>n>0));
+ const craftState=p=>({favorites:p.favorites||[],craftHistory:p.craftHistory||[]});
  const enqueue=fn=>{queued++;const next=queue.then(fn).finally(()=>queued--);queue=next.catch(()=>{});return next;};
  async function cell(x,y,z,seed,session){const w=await world();const [cx,cz]=C.chunk(x,z);let query=Chunk.findOne({world:storage(w),cx,cz}).lean();if(session)query=query.session(session);const doc=await query;return doc?.blocks?.[C.key(x,y,z)]??C.terrain(x,y,z,seed);}
  const vitals=p=>({health:p.health,hunger:p.hunger,air:p.air});
@@ -45,18 +46,21 @@ module.exports=function install({io,mongoose,authenticate}){
   environment.attach(rpc,socket);
   rpc('info',async()=>({world:await world(),online:roster().length,pvp:true,canReset:socket.data.nick==='fifflaren'}));
   rpc('join',()=>enqueue(async()=>{
-   if(players.get(socket.id)?.joined){const p=players.get(socket.id);return {world:await world(),florist:await floristSpot(await world()),pos:p.pos,inventory:p.inventory,wear:p.wear,vitals:vitals(p),players:roster(),pvp:true,animals:environment.snapshot(p)};}
+   if(players.get(socket.id)?.joined){const p=players.get(socket.id);return {world:await world(),florist:await floristSpot(await world()),pos:p.pos,inventory:p.inventory,wear:p.wear,vitals:vitals(p),players:roster(),pvp:true,animals:environment.snapshot(p),...craftState(p)};}
    const nick=socket.data.nick;
    for(const [id,p]of players)if(p.nick===nick&&id!==socket.id){const old=ns.sockets.get(id);if(old){await leave(old);old.emit('replaced');old.disconnect(true);}}
    const w=await world(),spawn=[...VILLAGE_SPAWN];
    const playerId=storage(w)===WORLD?nick:storage(w)+'/'+nick;
    const stored=await Player.findOneAndUpdate({_id:playerId},{$setOnInsert:{inventory:initialInventory(),pos:spawn,updatedAt:new Date()}},{upsert:true,returnDocument:'after'}).lean();
-   const personal=C.validPos(stored.spawn)?stored.spawn:null;
+   const personal=C.validPos(stored.spawn)?stored.spawn:null,known=new Set(C.recipes.map(r=>r.id));
+   const favorites=Array.isArray(stored.favorites)?[...new Set(stored.favorites.filter(id=>known.has(id)))].slice(0,64):[];
+   const craftHistory=Array.isArray(stored.craftHistory)?stored.craftHistory.filter(h=>h&&known.has(h.recipe)).slice(0,20).map(h=>({recipe:h.recipe,at:Number(h.at)||0})):[];
    let pos=personal||(C.validPos(stored.pos)?stored.pos:spawn);
    pos=[Math.floor(pos[0])+.5,Math.max(1,Math.ceil(pos[1])),Math.floor(pos[2])+.5];
    while(pos[1]<C.HEIGHT-1&&(C.solid(await cell(Math.floor(pos[0]),pos[1],Math.floor(pos[2]),w.seed))||C.solid(await cell(Math.floor(pos[0]),pos[1]+1,Math.floor(pos[2]),w.seed))))pos[1]++;
-   const p={nick,id:playerId,pos,spawn:personal,inventory:inventory(stored),wear:{...(stored.wear||{})},health:stored.health??20,hunger:stored.hunger??20,air:stored.air??10,exhaustion:stored.exhaustion||0,fallPeak:pos[1],regenAt:Date.now(),joined:true,lastMove:Date.now(),lastEdit:0};players.set(socket.id,p);await socket.join(WORLD);ns.to(WORLD).emit('players',roster());return {world:w,florist:await floristSpot(w),pos,inventory:p.inventory,wear:p.wear,vitals:vitals(p),players:roster(),pvp:true,animals:environment.snapshot(p)};
+   const p={nick,id:playerId,pos,spawn:personal,favorites,craftHistory,inventory:inventory(stored),wear:{...(stored.wear||{})},health:stored.health??20,hunger:stored.hunger??20,air:stored.air??10,exhaustion:stored.exhaustion||0,fallPeak:pos[1],regenAt:Date.now(),joined:true,lastMove:Date.now(),lastEdit:0};players.set(socket.id,p);await socket.join(WORLD);ns.to(WORLD).emit('players',roster());return {world:w,florist:await floristSpot(w),pos,inventory:p.inventory,wear:p.wear,vitals:vitals(p),players:roster(),pvp:true,animals:environment.snapshot(p),...craftState(p)};
   }));
+  rpc('favorite',data=>enqueue(async()=>{const p=live(socket),r=C.recipes.find(r=>r.id===data.id);if(!r||typeof data.enabled!=='boolean')throw Error('Неверный рецепт');if(data.enabled&&(p.favorites||[]).length>=64&&!p.favorites.includes(r.id))throw Error('Можно сохранить не больше 64 рецептов');await Player.updateOne({_id:p.id},data.enabled?{$addToSet:{favorites:r.id}}:{$pull:{favorites:r.id}});p.favorites=data.enabled?[...new Set([...(p.favorites||[]),r.id])].slice(0,64):(p.favorites||[]).filter(id=>id!==r.id);return craftState(p);}));
   rpc('chunks',async data=>{const w=await world();const p=players.get(socket.id);if(!p)throw Error('Сначала присоединись');const center=C.chunk(p.pos[0],p.pos[2]);if(!Array.isArray(data.coords)||data.coords.length>25)throw Error('Неверный запрос территории');const coords=data.coords.filter(v=>Array.isArray(v)&&v.length===2&&v.every(Number.isInteger)&&Math.abs(v[0]-center[0])<=4&&Math.abs(v[1]-center[1])<=4);const docs=coords.length?await Chunk.find({world:storage(w),$or:coords.map(([cx,cz])=>({cx,cz}))}).lean():[];return {chunks:coords.map(([cx,cz])=>docs.find(d=>d.cx===cx&&d.cz===cz)||{cx,cz,blocks:{},revision:0})};});
   rpc('mine',data=>enqueue(async()=>{
    const p=live(socket);if(!C.validCell(data.at))throw Error('Неверный блок');
@@ -146,7 +150,7 @@ module.exports=function install({io,mongoose,authenticate}){
   rpc('craft',data=>enqueue(async()=>{const p=live(socket);const r=data.grid?C.matchRecipe(data.grid,data.id):C.recipes.find(r=>r.id===data.id);if(!r||r.reference)throw Error('Неизвестный рецепт');if(data.grid&&data.grid.length===2&&r.station)throw Error('Нужен верстак');
    if(r.type==='furnace'||r.station===15)throw Error('Открой печь и запусти плавку');
    if(r.station){const w=await world(),[px,py,pz]=p.pos.map(Math.floor),accepted=r.stations?.length?r.stations:[r.station];let found=false;const coords=new Set();for(let x=px-3;x<=px+3;x++)for(let z=pz-3;z<=pz+3;z++)coords.add(C.chunk(x,z).join(','));const blocks=await environment.read(w,[...coords].map(k=>k.split(',').map(Number)));for(let x=px-3;x<=px+3;x++)for(let z=pz-3;z<=pz+3;z++)for(let y=Math.max(1,py-2);y<=Math.min(C.HEIGHT-1,py+2);y++)if(accepted.includes(blocks.get(x,y,z)))found=true;if(!found)throw Error('Рядом нужен '+(C.blocks[r.station]?.name||'станция').toLowerCase());}
-   const used=r.transform?{}:C.costs(r,p.inventory,data.grid);if(Object.keys(used).some(id=>p.wear[id]!=null&&p.wear[id]<C.items[id]?.durability))throw Error('Сначала убери изношенный инструмент из рецепта.');const bag=C.craft(p.inventory,r.id,data.grid,data.selections);await Player.updateOne({_id:p.id},{$set:{inventory:bag,updatedAt:new Date()}});p.inventory=bag;return {inventory:bag,saved:true};
+   const used=r.transform?{}:C.costs(r,p.inventory,data.grid);if(Object.keys(used).some(id=>p.wear[id]!=null&&p.wear[id]<C.items[id]?.durability))throw Error('Сначала убери изношенный инструмент из рецепта.');const bag=C.craft(p.inventory,r.id,data.grid,data.selections),entry={recipe:r.id,at:Date.now()};await Player.updateOne({_id:p.id},{$set:{inventory:bag,updatedAt:new Date()},$push:{craftHistory:{$each:[entry],$position:0,$slice:20}}});p.inventory=bag;p.craftHistory=[entry,...(p.craftHistory||[])].slice(0,20);return {inventory:bag,saved:true,...craftState(p)};
   }));
   rpc('florist_begin',()=>enqueue(async()=>{
    const p=live(socket);if(p.flowerVisit)throw Error('Встреча уже идёт.');
