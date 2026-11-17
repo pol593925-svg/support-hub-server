@@ -1312,6 +1312,7 @@ const io = new Server(server, {
 
 // Список активных пользователей в чате
 const callsService=require('./calls-service')({app,io,User,Event});
+require('./cs16-admin-tools')({io,authenticate:token=>callsService.actor(token)});
 require('./auth-session')({app,User,authenticate:token=>callsService.actor(token)});
 require('./team-access')({app,io,User,onlineUsers:()=>onlineUsers,authenticate:token=>callsService.actor(token)});
 require('./radio-service').install({app,io,mongoose,authenticate:token=>callsService.actor(token)});
