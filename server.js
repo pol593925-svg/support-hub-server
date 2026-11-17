@@ -4655,7 +4655,7 @@ function cs16State() {
     now: Date.now(),
     players: [...cs16.players.entries()].map(([id, p]) => ({
       id, nick: p.nick, characterId:CS16Characters.normalize(p.characterId),petId:CS16Magic.petValid(p.petId)?p.petId:null, classId:p.classId||'assault',nextClass:p.nextClass||p.classId||'assault',team: p.team, alive: p.alive, hp: p.hp,
-      kills: p.kills, deaths: p.deaths, money: p.money, weapon: p.weapon,
+      kills: p.kills, deaths: p.deaths, money: p.money, weapon: p.weapon, meleeStyle:p.meleeStyle==='karambit'?'karambit':'knife',meleeSwing:p.meleeSwing||0,
       bot: !!p.bot, lvl: cs16LvlOf(p.nick), respawnAt:p.cqRespawnAt||0, spawnFlag:p.cqSpawn??null,
     })),
   };
@@ -4801,7 +4801,7 @@ function cs16BotAdd(bySocket, forcedTeam, preparing=false) {
   const wps = CS16_WPS[cs16.map] || CS16_WPS.dust2;
   cs16.players.set(id, {
     nick: '🤖 Бот-' + cs16BotSeq, bot: true, characterId:['ember','tide','jade','aurora'][cs16BotSeq%4], team, money: 800, hp: 100, armor: 0,
-    alive: true, kills: 0, deaths: 0, weapon: team === 't' ? 'glock' : 'usp',
+    alive: true, kills: 0, deaths: 0, weapon: team === 't' ? 'glock' : 'usp', meleeStyle:'knife',meleeSwing:0,
     kit: false, lossStreak: 0, joinedAt: Date.now(),
     bx: wps[0][0] * 4 + 2, bz: wps[0][1] * 4 + 2, bwp: 0, blastShot: 0,
   });
@@ -4873,7 +4873,7 @@ setInterval(() => { // тик ботов ~7 раз/сек
       if (dl < 1.5) { p.bwp = (p.bwp + 1 + Math.floor(Math.random() * 2)) % wps.length; }
       else { p.byaw = Math.atan2(dx, dz); moving = cs16BotStep(p, dx / dl, dz / dl, grid); }
     }
-    io.emit('cs16_pos', { nick: p.nick, team: p.team, pos: [+p.bx.toFixed(2), +(p.ly||0).toFixed(2), +p.bz.toFixed(2)], yaw: +(p.byaw || 0).toFixed(3), pitch: 0, weapon: p.weapon || 'glock', move: moving, skin: '',characterId:CS16Characters.normalize(p.characterId) });
+    io.emit('cs16_pos', { nick: p.nick, team: p.team, pos: [+p.bx.toFixed(2), +(p.ly||0).toFixed(2), +p.bz.toFixed(2)], yaw: +(p.byaw || 0).toFixed(3), pitch: 0, weapon: p.weapon || 'glock', meleeStyle:p.meleeStyle==='karambit'?'karambit':'knife',meleeSwing:p.meleeSwing||0, move: moving, skin: '',characterId:CS16Characters.normalize(p.characterId) });
   }
 }, 150);
 function cs16BotStep(p, ux, uz, grid) {
@@ -5034,7 +5034,7 @@ io.on('connection', (socket) => {
       if (p.nick.toLowerCase() === nick.toLowerCase() && id !== socket.id){if(p.frontSeat!=null)cs16Front.leave(p);io.sockets.sockets.get(id)?.leave('cs16-front');cs16.players.delete(id);}
     }
 
-    cs16.players.set(socket.id, { nick, team: null, money: 800, hp: 100, armor: 0, alive: cs16.phase==='lobby', kills: 0, deaths: 0, weapon: null, kit: false, lossStreak: 0, joinedAt: Date.now() });
+    cs16.players.set(socket.id, { nick, team: null, money: 800, hp: 100, armor: 0, alive: cs16.phase==='lobby', kills: 0, deaths: 0, weapon: null, meleeStyle:'knife',meleeSwing:0, kit: false, lossStreak: 0, joinedAt: Date.now() });
     socket.join('cs16-front');cs16Personal(socket.id);
     cs16Broadcast();
     socket.emit('cs16_environment',fieldEnvironment.snapshot());
@@ -5135,7 +5135,13 @@ io.on('connection', (socket) => {
     if(!Array.isArray(d.pos)||d.pos.length!==3||!d.pos.every(Number.isFinite))return;if (d.pos) { p.lx = d.pos[0]; p.ly=d.pos[1]; p.lz = d.pos[2]; p.crouched=!!d.crouched; }
     // 3.24.2: скин экипированного оружия уходит другим игрокам (только известные id)
     const skinId = (d.skin && CS16_SKINS[d.skin]) ? d.skin : '';
-    socket.broadcast.emit('cs16_pos', { nick: p.nick, team: p.team, pos: d.pos, yaw: d.yaw, pitch: d.pitch, weapon: d.weapon, move: d.move, crouched: !!d.crouched, skin: skinId, characterId:CS16Characters.normalize(p.characterId) });
+    // Cosmetic only: keep the last allowed style when older clients omit it or input is invalid.
+    if(d.meleeStyle==='karambit'||d.meleeStyle==='knife')p.meleeStyle=d.meleeStyle;
+    // Animation sequence only: never call the shooting, environment or damage paths.
+    if(d.weapon==='knife'&&Number.isSafeInteger(d.meleeSwing)&&d.meleeSwing>=0&&d.meleeSwing<=2147483647&&d.meleeSwing!==(p.meleeSwing||0)){
+      const now=Date.now();if(now-(p.meleeSwingAt??-Infinity)>=200){p.meleeSwing=d.meleeSwing;p.meleeSwingAt=now;}
+    }
+    socket.broadcast.emit('cs16_pos', { nick: p.nick, team: p.team, pos: d.pos, yaw: d.yaw, pitch: d.pitch, weapon: d.weapon, meleeStyle:p.meleeStyle==='karambit'?'karambit':'knife',meleeSwing:p.meleeSwing||0, move: d.move, crouched: !!d.crouched, skin: skinId, characterId:CS16Characters.normalize(p.characterId) });
   });
 
   // 3.24.0: шаги — ретрансляция (звук чужих шагов по дистанции)
@@ -5489,5 +5495,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '5.8.1', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '5.8.2', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });
