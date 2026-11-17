@@ -4232,6 +4232,7 @@ app.post('/api/casino/rr/pull', async (req, res) => {
 // ==================== 3.15.0: КС 1.6 — de_dust2 (5x5..1x1, до 16 побед) ====================
 // Одна комната на всех: лобби → распределение по командам → старт первым зашедшим → раунды.
 const CS16Combat = require('./cs16-combat');
+const CS16HitValidation=require('./cs16-hit-validation');
 const CS16Vehicles = require('./cs16-vehicles');
 const CS16Classes=require('./cs16-classes');
 const CS16Buildings=require('./cs16-buildings');
@@ -5131,7 +5132,7 @@ io.on('connection', (socket) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || !d) return;
     if(p.frontSeat!=null)return;
-    if(!Array.isArray(d.pos)||d.pos.length!==3||!d.pos.every(Number.isFinite))return;if (d.pos) { p.lx = d.pos[0]; p.ly=d.pos[1]; p.lz = d.pos[2]; }
+    if(!Array.isArray(d.pos)||d.pos.length!==3||!d.pos.every(Number.isFinite))return;if (d.pos) { p.lx = d.pos[0]; p.ly=d.pos[1]; p.lz = d.pos[2]; p.crouched=!!d.crouched; }
     // 3.24.2: скин экипированного оружия уходит другим игрокам (только известные id)
     const skinId = (d.skin && CS16_SKINS[d.skin]) ? d.skin : '';
     socket.broadcast.emit('cs16_pos', { nick: p.nick, team: p.team, pos: d.pos, yaw: d.yaw, pitch: d.pitch, weapon: d.weapon, move: d.move, crouched: !!d.crouched, skin: skinId, characterId:CS16Characters.normalize(p.characterId) });
@@ -5164,7 +5165,7 @@ io.on('connection', (socket) => {
     if(['mgveh','tankgun','rpg'].includes(d.weapon))return;
     if(p.frontSeat!=null||target.frontSeat!=null)return;
     const origin=[p.lx,p.ly+1.5,p.lz],end=[target.bot?target.bx:target.lx,(target.ly||0)+1,target.bot?target.bz:target.lz];
-    if([...origin,...end].every(Number.isFinite)){const dist=Math.hypot(...end.map((v,i)=>v-origin[i]));if(dist>.01){const dir=end.map((v,i)=>(v-origin[i])/dist),limit=Math.max(0,dist-.4);if(cs16Front.rayUnit(origin,dir,limit,p.team)||CS16Buildings.ray(CS16_GRID[cs16.map],cs16.map,origin,dir,limit)!==null)return;}}
+    if([...origin,...end].every(Number.isFinite)){const shot=CS16HitValidation.segment(p,target,d);if(!shot)return;const {origin,dir,limit}=shot,grid=CS16_GRID[cs16.map];if(cs16Front.rayUnit(origin,dir,limit,p.team)||CS16Buildings.gridHit(grid,origin,dir,limit)||CS16Buildings.ray(grid,cs16.map,origin,dir,limit)!==null)return;}
     const weapon = CS16Combat.weapons[d.weapon], distance = Number(d.dist);
     if (!weapon || !Number.isFinite(distance) || distance<0 || distance>200 || (d.weapon==='knife'&&distance>2.85)) return;
     const interval = d.weapon==='knife'?(d.heavy?900:750):(d.weapon==='glock'||d.weapon==='famas'?75:60000/weapon.rpm);
@@ -5488,5 +5489,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '5.4.1', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '5.8.1', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });

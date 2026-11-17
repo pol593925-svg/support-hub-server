@@ -41,3 +41,24 @@ test('confirmed armor break, leg and head metadata match the actual damage calcu
  context.cs16ApplyHit({nick:'A'},{nick:'B',hp:1000,armor:100},'ak47',false,'head',0,false);
  assert.equal(events.at(-1).data.head,true);assert.equal(events.at(-1).data.zone,'head');
 });
+
+test('actual handler accepts a visible rooftop head but rejects geometry in the actual shot path',()=>{
+ const B=require('./cs16-buildings'),T=require('./cs16-tactical-map'),Hit=require('./cs16-hit-validation');
+ const codes={'#':1,'.':0,D:2,C:3,4:4,5:5,6:6,7:7,V:8,B:9,S:10,T:11},grid=T.generate('dust2').map(r=>Array.from(r,c=>codes[c]));
+ const house=B.layout(grid,'dust2').buildings[0];let candidate;
+ for(const u of [1,2,4.5,7,8.2,10.7])for(const z of [2,6,9,10.8])for(const dx of [-8,5,18])for(const dz of [-12,24]){
+  const p={nick:'A',team:'ct',alive:true,lx:house.x+dx,ly:0,lz:house.z+dz};
+  const q={nick:'B',team:'t',alive:true,lx:house.x+u,ly:z<5.25&&u<8.85?B.roofHeight(u)+.06:7.2,lz:house.z+z};
+  const h=Hit.segment(p,q,{head:true}),b=Hit.segment(p,q,{zone:'body'}),blocked=s=>B.ray(grid,'dust2',s.origin,s.dir,s.limit)!==null||B.gridHit(grid,s.origin,s.dir,s.limit);
+  if(!blocked(h)&&blocked(b)){candidate={p,q,h};break;}
+ }
+ assert(candidate);const {p,q,h}=candidate;let handler,clock=10000;const applied=[];
+ const context={socket:{id:'a',on:(name,fn)=>handler=fn},cs16:{phase:'live',map:'dust2',gm:'classic',players:new Map([['a',p],['b',q]])},CS16Combat,CS16HitValidation:Hit,CS16Buildings:B,CS16_GRID:{dust2:grid},cs16Front:{rayUnit:()=>null},Date:{now:()=>clock},cs16ApplyHit:(...a)=>applied.push(a)};
+ vm.runInNewContext(source.slice(start,end),context);
+ const shot={target:'B',weapon:'ak47',zone:'head',head:true,origin:h.origin,point:h.point,dist:Math.hypot(...h.point.map((v,i)=>v-h.origin[i]))};
+ handler(shot);assert.equal(applied.length,1,'visible head denied');clock+=200;
+ handler({...shot,origin:[p.lx+5,1.62,p.lz]});assert.equal(applied.length,1,'spoofed origin accepted');
+ // Aim through the visible solid house roof, rather than removing roof occlusion.
+ p.lx=q.lx=house.x+4.5;p.lz=q.lz=house.z+2;p.ly=12;q.ly=3.6;clock+=200;
+ handler({target:'B',weapon:'ak47',zone:'body',dist:9});assert.equal(applied.length,1,'solid roof penetrated');
+});

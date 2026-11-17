@@ -36,6 +36,29 @@
  }boxes.push(...Terrain.bridges(grid));const passages=Passages.install(grid);boxes.push(...passages.boxes);const data={buildings,boxes,passages};Env.setup(data);Front.protect(grid,data.boxes);cache.set(grid,data);return data;}
  function contains(grid,map,x,z,margin=0){return layout(grid,map).buildings.some(b=>x>b.x-margin&&x<b.x+12+margin&&z>b.z-margin&&z<b.z+12+margin);}
  function rayBox(o,d,b,maxT){let lo=0,hi=maxT;for(let i=0;i<3;i++){if(Math.abs(d[i])<1e-9){if(o[i]<b.min[i]||o[i]>b.max[i])return null;continue;}let a=(b.min[i]-o[i])/d[i],c=(b.max[i]-o[i])/d[i];if(a>c)[a,c]=[c,a];lo=Math.max(lo,a);hi=Math.min(hi,c);if(hi<lo)return null;}return lo<=maxT?lo:null;}
+ // Finite grid solids: tunnel/vent roofs must not become infinitely tall walls.
+ // Test the whole interval inside each cell, including vertical shots and the origin cell.
+ const gridSlabs={1:[[0,4]],2:[[0,2.6]],3:[[0,1.15]],11:[[0,4.2]],4:[[-1.3,0],[-3.3,-3.2]],8:[[1.35,1.43],[-.1,0]],9:[[2,2.3]]},emptySlabs=[];
+ function gridHit(grid,o,d,maxT){
+  let x=Math.floor(o[0]/4),z=Math.floor(o[2]/4),enter=0;
+  const sx=d[0]>0?1:-1,sz=d[2]>0?1:-1,dx=d[0]?Math.abs(4/d[0]):Infinity,dz=d[2]?Math.abs(4/d[2]):Infinity;
+  let tx=d[0]?((d[0]>0?(x+1)*4:x*4)-o[0])/d[0]:Infinity,tz=d[2]?((d[2]>0?(z+1)*4:z*4)-o[2])/d[2]:Infinity;
+  for(let n=0;n<grid.length+(grid[0]?.length||0)+4&&enter<=maxT;n++){
+   const c=grid[z]?.[x]??1,end=Math.min(maxT,tx,tz),slabs=gridSlabs[c]||emptySlabs;
+   let best=null;
+   for(const [bottom,top]of slabs){
+    const box={min:[x*4,bottom,z*4],max:[x*4+4,top,z*4+4]},t=rayBox(o,d,box,end);
+    if(t===null||t<enter-1e-7||best&&best.t<=t)continue;
+    const point=o.map((v,i)=>v+d[i]*t);let gap=Infinity,normal=[0,1,0];
+    for(let i=0;i<3;i++)for(const side of ['min','max']){const dist=Math.abs(point[i]-box[side][i]);if(dist<gap){gap=dist;normal=[0,0,0];normal[i]=side==='min'?-1:1;}}
+    best={t,cell:c,normal,nx:normal[0],nz:normal[2]};
+   }
+   if(best)return best;
+   if(end>=maxT)return null;
+   if(tx<tz){enter=tx;tx+=dx;x+=sx;}else{enter=tz;tz+=dz;z+=sz;}
+  }
+  return null;
+ }
  function activeBoxes(grid,map){const data=layout(grid,map);if(data.collisionRevision!==data.environment.revision||data.frontRevision!==(grid.frontDamage?.revision||0)){
     data.frontRevision=grid.frontDamage?.revision||0;data.collisionBoxes=data.boxes.concat(Env.boxes(data));data.collisionRevision=data.environment.revision;
     data.sectors=new Map();
@@ -102,5 +125,5 @@
     const base=find(names[m.userData.surfaceKind]);if(!base)continue;m.map=base.map;m.normalMap=base.normalMap;m.roughnessMap=base.roughnessMap;m.bumpMap=null;m.roughness=base.roughness;m.metalness=base.metalness;m.normalScale.copy(base.normalScale||new T.Vector2(1,1));m.needsUpdate=true;}},dispose(){for(const g of geometries)g.dispose();for(const m of materials)m.dispose();for(const t of textures)t.dispose();group.removeFromParent();}};
  }
 
- return {roofHeight,layout,contains,rayBox,ray,hit,activeBoxes,collide,vertical,trace,create};
+ return {roofHeight,layout,contains,rayBox,gridHit,ray,hit,activeBoxes,collide,vertical,trace,create};
 });
