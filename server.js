@@ -25,6 +25,8 @@ mongoose.connect(MONGO_URI).then(() => {
 const userSchema = new mongoose.Schema({
   offboardedAt: {type:Date,default:null},
   callsSessions: {type:[{hash:String,expiresAt:Date}],default:[],select:false},
+  callsReviewAccess: {type:{team:String,by:String,at:Date},default:null,select:false},
+  callsReviewAudit: {type:[{enabled:Boolean,team:String,by:String,at:Date}],default:[],select:false},
   username: { type: String, required: true, unique: true, lowercase: true },
   password: { type: String, required: true },
   role: { type: String, default: 'user' }, // 'admin' или 'user'
@@ -262,15 +264,13 @@ app.post('/api/register', async (req, res) => {
     const role = (username === 'fifflaren') ? 'admin' : 'user';
 
     // Команда (проверяем, что она существует в списке команд)
-    let team = '';
-    if (req.body.team) {
-      const teamName = String(req.body.team).trim();
-      const teamDoc = await Team.findOne({ name: new RegExp(`^${teamName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
-      if (!teamDoc) {
-        return res.status(400).json({ success: false, message: 'Такой команды не существует!' });
-      }
-      team = teamDoc.name;
+    const teamName = String(req.body.team || 'Fifflaren').trim();
+    if (teamName.toLowerCase() !== 'fifflaren') {
+      return res.status(400).json({ success: false, message: 'В Support Hub доступна команда Fifflaren.' });
     }
+    const teamDoc = await Team.findOne({ name: /^fifflaren$/i });
+    if (!teamDoc) return res.status(503).json({ success: false, message: 'Команда временно недоступна. Повтори позже.' });
+    const team = teamDoc.name;
 
     const newUser = new User({
       username,
@@ -401,7 +401,7 @@ app.post('/api/admin/casino-ban', verifyAdmin, async (req, res) => {
 
 app.get('/api/admin/users', verifyAdmin, async (req, res) => {
   try {
-    const users = await User.find({}, { password: 0 }).sort({ username: 1 });
+    const users = await User.find({$or:[{username:'fifflaren'},{team:/^fifflaren$/i}]}, { password: 0 }).sort({ username: 1 });
     res.json({ success: true, users });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -416,6 +416,8 @@ app.post('/api/events', async (req, res) => {
     const { user, type, date, ...fields } = req.body;
     if(type==='log'){delete fields.verifiedLog;delete fields.teamAtSubmission;delete fields.linkKey;}
     if(type==='call'){
+      // Network service requests are created only by the authenticated dedicated endpoint.
+      delete fields.requestType;delete fields.requestId;delete fields.requestOriginalLink;delete fields.submittedByTeam;
       delete fields.reviewHistory;delete fields.resubmittedAt;fields.reviewVersion=0;
       fields.linkKey=require('./call-workflow').linkKey(fields.callLink);
       fields.reviewStatus='pending';fields.reviewReason='';delete fields.reviewedAt;delete fields.reviewedBy;
@@ -780,11 +782,11 @@ app.get('/api/stats/mine', async (req, res) => {
 // Список команд вместе с составом (публично — для регистрации и Штаба)
 app.get('/api/teams', async (req, res) => {
   try {
-    const teams = await Team.find().sort({ name: 1 });
-    const users = await User.find({ team: { $ne: '' } }, { username: 1, team: 1 });
+    const teams = await Team.find({ name: /^fifflaren$/i }).sort({ name: 1 });
+    const users = await User.find({$or:[{username:'fifflaren'},{team:/^fifflaren$/i}]}, { username: 1, team: 1 });
     const roster = teams.map(t => ({
       name: t.name,
-      users: users.filter(u => u.team === t.name).map(u => u.username)
+      users: users.filter(u => u.username === 'fifflaren' || String(u.team).trim().toLowerCase() === t.name.toLowerCase()).map(u => u.username)
     }));
     res.json({ success: true, teams: roster });
   } catch (err) {
@@ -796,7 +798,7 @@ app.get('/api/teams', async (req, res) => {
 app.post('/api/admin/teams', verifyAdmin, async (req, res) => {
   try {
     const name = (req.body.name || '').trim();
-    if (!name) return res.status(400).json({ success: false, message: 'Введите название команды' });
+    if (name.toLowerCase() !== 'fifflaren') return res.status(400).json({ success: false, message: 'Доступна только команда Fifflaren.' });
 
     await Team.updateOne({ name }, { $setOnInsert: { name } }, { upsert: true });
     const teams = await Team.find().sort({ name: 1 });
@@ -811,6 +813,7 @@ app.delete('/api/admin/teams', verifyAdmin, async (req, res) => {
   try {
     const name = (req.query.name || '').trim();
     if (!name) return res.status(400).json({ success: false, message: 'Не указано название' });
+    if (name.toLowerCase() === 'fifflaren') return res.status(400).json({ success: false, message: 'Основную команду Fifflaren удалить нельзя.' });
 
     await Team.deleteOne({ name });
     res.json({ success: true });
@@ -1312,6 +1315,8 @@ const io = new Server(server, {
 
 // Список активных пользователей в чате
 const callsService=require('./calls-service')({app,io,User,Event});
+require('./truffle-loans')({app,io,mongoose,User,authenticate:token=>callsService.actor(token)});
+require('./owner-dashboard')({app,User,Event,Loan:mongoose.models.TruffleLoan,authenticate:token=>callsService.actor(token),onlineUsers:()=>onlineUsers});
 require('./cs16-admin-tools')({io,authenticate:token=>callsService.actor(token)});
 require('./auth-session')({app,User,authenticate:token=>callsService.actor(token)});
 require('./team-access')({app,io,User,onlineUsers:()=>onlineUsers,authenticate:token=>callsService.actor(token)});
@@ -5496,5 +5501,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '5.8.2', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '6.0.0', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });

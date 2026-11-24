@@ -29,13 +29,14 @@ function install({app,Event,actor,bearer,notify,callRow}){
       const user=await actor(bearer(req));if(!user)return res.status(403).json({success:false,message:'Войди в приложение заново.'});
       const id=req.params.id,version=req.body.version,input=req.body;
       if(!/^[a-f0-9]{24}$/i.test(id)||!Number.isInteger(version)||version<0)return res.status(400).json({success:false,message:'Некорректная версия колла.'});
-      const service=String(input.serviceName||'').trim(),link=String(input.callLink||'').trim(),note=String(input.callNote||'').trim(),kind=String(input.callType||'');
-      if(!['Колл на биржу','Колл на почту'].includes(kind)||!service||service.length>160||!linkKey(link)||note.length>3000)
-        return res.status(400).json({success:false,message:'Проверь тип, название, ссылку и заметку.'});
       const at=new Date(),username=user.username.toLowerCase();
-      const next={callType:kind,serviceName:service,callLink:link,callNote:note,reviewStatus:'pending',reviewReason:''};
       const before=await Event.findOne({_id:id,type:'call',user:username,'data.reviewStatus':'returned',...versionFilter(version)});
       if(!before)return res.status(409).json({success:false,message:'Колл уже изменился. Обнови список.'});
+      const network=before.data.requestType==='network';
+      const service=network?'Пасы · сеть':String(input.serviceName||'').trim(),link=String(input.callLink||'').trim(),note=network?'':String(input.callNote||'').trim(),kind=network?'Скачать пасы':String(input.callType||'');
+      if((!network&&!['Колл на биржу','Колл на почту'].includes(kind))||!service||service.length>160||!linkKey(link)||note.length>3000)
+        return res.status(400).json({success:false,message:'Проверь тип, название, ссылку и заметку.'});
+      const next={callType:kind,serviceName:service,callLink:link,callNote:note,reviewStatus:'pending',reviewReason:'',reviewedAt:null,reviewedBy:''};
       const history=[];if(!(before.data.reviewHistory||[]).some(h=>h.link))history.push({action:'previous',by:username,at:before.createdAt,...snapshot(before.data)});
       history.push({action:'resubmitted',by:username,at,...snapshot(next)});
       const row=await Event.findOneAndUpdate({_id:id,type:'call',user:username,'data.reviewStatus':'returned',...versionFilter(version)},
