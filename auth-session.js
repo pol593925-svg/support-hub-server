@@ -8,9 +8,9 @@ module.exports=function install({app,User,authenticate,now=Date.now}){
   try{
    const token=bearer(req),user=token&&await authenticate(token);
    const session=user?.callsSessions?.find(s=>s.hash===hash(token)&&+new Date(s.expiresAt)>now());
-   if(!user||user.isBanned||user.offboardedAt||!session)return res.status(401).json({success:false,message:'Срок действия пропуска истёк. Войди с паролем.'});
+   if(!user||user.isBanned||user.offboardedAt||!session)return res.status(401).json({success:false,message:'Срок входа истёк. Войди с паролем.'});
    res.json({success:true,username:user.username,role:user.role||'user',team:user.team||'',isMuted:!!user.isMuted,callsToken:token,sessionExpiresAt:+new Date(session.expiresAt)});
-  }catch{res.status(503).json({success:false,message:'Не удалось проверить пропуск. Попробуй ещё раз.'});}
+  }catch{res.status(503).json({success:false,message:'Не удалось проверить вход. Попробуй ещё раз.'});}
  });
  app.post('/api/auth/logout',async(req,res)=>{
   res.set('Cache-Control','no-store');

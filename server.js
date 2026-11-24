@@ -34,6 +34,8 @@ const userSchema = new mongoose.Schema({
   position: { type: String, default: '' }, // должность (ставит админ в админке)
   email: { type: String, default: '' },    // почта сотрудника (админ вбивает; для уведомлений)
   avatar: { type: String, default: '' },   // аватарка (data URL, ставит сам)
+  telegram: { type: String, default: '', maxlength: 32 },
+  status: { type: String, enum: ['available', 'break', 'dnd'], default: 'available' },
   isMuted: { type: Boolean, default: false },
   isBanned: { type: Boolean, default: false },
   casinoBalance: { type: Number, default: null },   // 3.5.0 — банк казино (null = ещё не выданы стартовые 500)
@@ -83,6 +85,7 @@ const eventSchema = new mongoose.Schema({
 });
 eventSchema.index({ date: 1, type: 1 });
 eventSchema.index({ user: 1, date: 1 });
+eventSchema.index({ user: 1, type: 1, 'data.reviewedAt': 1 });
 eventSchema.index({'data.teamAtSubmission':1,'data.linkKey':1,createdAt:-1},{partialFilterExpression:{'data.linkKey':{$type:'string'}}});
 const Event = mongoose.model('Event', eventSchema);
 
@@ -1096,6 +1099,11 @@ app.get('/api/profile', async (req, res) => {
       { $group: { _id: null, n: { $sum: { $size: '$likes' } } } }
     ]);
 
+    // New contact fields are visible only to an authenticated member of the same team.
+    const viewer = await callsService.actor(String(req.headers.authorization || '').replace(/^Bearer /, ''));
+    const profileTeam = require('./work-team').teamOf(user);
+    const contactVisible = !!viewer && !!profileTeam && require('./work-team').teamOf(viewer) === profileTeam;
+
     res.json({
       success: true,
       profile: {
@@ -1103,6 +1111,7 @@ app.get('/api/profile', async (req, res) => {
         team: user.team || '',
         position: user.position || '',
         avatar: user.avatar || '',
+        ...(contactVisible ? { telegram: user.telegram || '', status: ['available', 'break', 'dnd'].includes(user.status) ? user.status : 'available' } : {}),
         month: {
           truffles: statAgg[0]?.truffles || 0,
           approves: statAgg[0]?.approves || 0,
@@ -1122,22 +1131,7 @@ app.get('/api/profile', async (req, res) => {
   }
 });
 
-// Поставить/сменить свой аватар
-app.post('/api/profile', async (req, res) => {
-  try {
-    const username = (req.body.username || '').trim().toLowerCase();
-    const dataUrl = String(req.body.avatar || '');
-    if (!username) return res.status(400).json({ success: false, message: 'Укажите ник' });
-    if (dataUrl.length > 400000) return res.status(400).json({ success: false, message: 'Аватар слишком большой (до ~300 КБ)' });
-    const user = await User.findOne({ username });
-    if (!user) return res.status(404).json({ success: false, message: 'Пользователь не найден' });
-    user.avatar = dataUrl;
-    await user.save();
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
+// Authenticated own-profile updates (including the legacy avatar route) are installed below.
 
 // Поставить должность (админ)
 app.post('/api/admin/position', verifyAdmin, async (req, res) => {
@@ -1315,6 +1309,7 @@ const io = new Server(server, {
 
 // Список активных пользователей в чате
 const callsService=require('./calls-service')({app,io,User,Event});
+require('./profile-service')({app,User,Event,DailyStat,authenticate:token=>callsService.actor(token)});
 require('./truffle-loans')({app,io,mongoose,User,authenticate:token=>callsService.actor(token)});
 require('./owner-dashboard')({app,User,Event,Loan:mongoose.models.TruffleLoan,authenticate:token=>callsService.actor(token),onlineUsers:()=>onlineUsers});
 require('./cs16-admin-tools')({io,authenticate:token=>callsService.actor(token)});
@@ -5501,5 +5496,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '6.0.0', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '6.1.0', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });
