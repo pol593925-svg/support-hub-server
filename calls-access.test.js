@@ -159,3 +159,61 @@ test('offboarded or banned identities cannot create requests, review, receive ca
   assert.equal((await f.grant(true,'member')).status,403);
   f.users[0].offboardedAt=null;f.users[0].isBanned=true;assert.equal((await f.grant(true,'member')).status,403);
 });
+
+test('quantity requests validate authenticated team membership and persist exactly once under retries',async()=>{
+  const f=await fixture(),owner=await f.socket('fifflaren'),member=await f.socket('member');
+  const body={quantity:15,requestId:'quantity-request-12345678'};
+  assert.equal((await f.request('post','/api/calls/log-requests','invalid',body)).status,401);
+  assert.equal((await f.request('post','/api/calls/log-requests','outsider',body)).status,403);
+  for(const quantity of [0,-1,0.5,100001,'12',null,true,{},[1]])
+    assert.equal((await f.request('post','/api/calls/log-requests','member',{...body,quantity})).status,400);
+  assert.equal((await f.request('post','/api/calls/log-requests','member',{...body,requestId:'short'})).status,400);
+  const replies=await Promise.all([1,2].map(()=>f.request('post','/api/calls/log-requests','member',{
+    ...body,user:'outsider',teamAtSubmission:'gamma',status:'done',callLink:'https://example.com/not-used'})));
+  assert.deepEqual(replies.map(r=>r.status).sort(),[200,201]);assert.equal(f.events.length,1);
+  const row=replies[0].data.call;
+  assert.equal(row.user,'member');assert.equal(row.requestType,'logs');assert.equal(row.quantity,15);
+  assert.equal(row.kind,'Запросить логов');assert.equal(row.service,'Запрос логов · 15');assert.equal(row.link,'');assert.equal(row.status,'pending');
+  assert.equal(f.events[0].data.teamAtSubmission,'alpha');assert.equal(f.events[0].data.reviewHistory[0].quantity,15);
+  assert.equal(owner.sent.length,1);assert.equal(member.sent.length,1);
+  assert.equal((await f.request('get','/api/fifflaren/calls','fifflaren')).data.calls[0].quantity,15);
+  assert.equal((await f.request('get','/api/calls/mine','member')).data.calls[0].quantity,15);
+  assert.equal((await f.request('post','/api/calls/log-requests','member',{...body,quantity:16})).status,409);
+  for(const quantity of [1,100000])assert.equal((await f.request('post','/api/calls/log-requests','member',{quantity,requestId:'quantity-boundary-'+quantity})).status,201);
+  f.users[1].isBanned=true;assert.equal((await f.request('post','/api/calls/log-requests','member',body)).status,401);
+});
+
+test('returned quantity is corrected with revision checks and retains original retry identity',async()=>{
+  const f=await fixture(),body={quantity:7,requestId:'quantity-request-12345678'};
+  const first=await f.request('post','/api/calls/log-requests','member',body),id=first.data.call.id;
+  assert.equal((await f.request('patch','/api/fifflaren/calls/:id','fifflaren',{status:'returned',reason:'Уточни количество',version:0},{id})).status,200);
+  assert.equal((await f.request('patch','/api/calls/mine/:id','outsider',{quantity:9,version:1},{id})).status,409);
+  assert.equal((await f.request('patch','/api/calls/mine/:id','member',{quantity:0,version:1},{id})).status,400);
+  f.users[1].team='beta';assert.equal((await f.request('patch','/api/calls/mine/:id','member',{quantity:9,version:1},{id})).status,403);f.users[1].team='alpha';
+  const fixed=await f.request('patch','/api/calls/mine/:id','member',{quantity:9,version:1,callType:'Колл на биржу',callLink:'https://example.com',serviceName:'ignored'},{id});
+  assert.equal(fixed.status,200);assert.equal(fixed.data.call.quantity,9);assert.equal(fixed.data.call.status,'pending');assert.equal(fixed.data.call.version,2);
+  assert.equal(fixed.data.call.kind,'Запросить логов');assert.equal(fixed.data.call.link,'');assert.equal(fixed.data.call.history.at(-1).quantity,9);
+  assert.equal((await f.request('patch','/api/calls/mine/:id','member',{quantity:9,version:1},{id})).status,409);
+  const replay=await f.request('post','/api/calls/log-requests','member',body);assert.equal(replay.status,200);assert.equal(replay.data.replayed,true);assert.equal(replay.data.call.quantity,9);
+  const done=await f.request('patch','/api/fifflaren/calls/:id','fifflaren',{status:'done',version:2},{id});assert.equal(done.status,200);assert.equal(done.data.call.quantity,9);assert.equal(done.data.call.status,'done');assert.equal(done.data.call.reviewedBy,'fifflaren');assert.equal(f.events.length,1);
+});
+
+test('authorized feed and call lists return current author photos once and preserve deleted history',async()=>{
+  const f=await fixture(),photo='data:image/png;base64,aGVsbG8=';
+  Object.assign(f.users[1],{avatar:photo,telegram:'private_contact',password:'private_password'});
+  const socket=await f.socket('fifflaren');
+  await f.request('post','/api/calls/log-requests','member',{quantity:5,requestId:'quantity-request-12345678'});
+  assert.equal(socket.sent[0][1].avatar,photo);
+  await new f.Event({type:'call',user:'member',data:{teamAtSubmission:'alpha'}}).save();
+  await new f.Event({type:'call',user:'deleted',data:{teamAtSubmission:'alpha'}}).save();
+  await new f.Event({type:'call',user:'outsider',data:{teamAtSubmission:'gamma'}}).save();
+  const list=(await f.request('get','/api/fifflaren/calls','fifflaren')).data;
+  assert.deepEqual(list.authors,{member:{avatar:photo},deleted:{avatar:''}});
+  assert(!JSON.stringify(list.authors).includes('private_'));
+  assert.equal(list.calls.filter(row=>row.user==='member').length,2);
+  const log=await f.request('post','/api/logs','member',{link:'https://example.com/work',comment:'Обновление'});
+  assert.equal(log.data.log.avatar,photo);assert.equal(socket.sent.at(-1)[0],'team_log');assert.equal(socket.sent.at(-1)[1].avatar,photo);
+  assert.deepEqual((await f.request('get','/api/logs/team','fifflaren')).data.authors,{member:{avatar:photo}});
+  f.users[1].avatar='';assert.deepEqual((await f.request('get','/api/logs/team','fifflaren')).data.authors,{member:{avatar:''}});
+  assert.deepEqual((await f.request('get','/api/calls/mine','outsider')).data.authors,{outsider:{avatar:''}});
+});

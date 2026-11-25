@@ -419,8 +419,9 @@ app.post('/api/events', async (req, res) => {
     const { user, type, date, ...fields } = req.body;
     if(type==='log'){delete fields.verifiedLog;delete fields.teamAtSubmission;delete fields.linkKey;}
     if(type==='call'){
-      // Network service requests are created only by the authenticated dedicated endpoint.
+      // Service requests are created only by their authenticated dedicated endpoints.
       delete fields.requestType;delete fields.requestId;delete fields.requestOriginalLink;delete fields.submittedByTeam;
+      delete fields.requestQuantity;delete fields.requestOriginalQuantity;
       delete fields.reviewHistory;delete fields.resubmittedAt;fields.reviewVersion=0;
       fields.linkKey=require('./call-workflow').linkKey(fields.callLink);
       fields.reviewStatus='pending';fields.reviewReason='';delete fields.reviewedAt;delete fields.reviewedBy;
@@ -5496,5 +5497,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '6.1.0', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '6.1.1', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });

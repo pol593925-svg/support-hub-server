@@ -2,6 +2,7 @@
 const crypto=require('crypto');
 const {teamOf}=require('./work-team');
 const {linkKey,snapshot}=require('./call-workflow');
+const {avatar}=require('./call-authors');
 const OWNER='fifflaren';
 
 module.exports=function install({app,User,Event,actor,bearer,ownerTeam,accessFor,subscribers,notify,callRow,calendar}){
@@ -76,12 +77,12 @@ module.exports=function install({app,User,Event,actor,bearer,ownerTeam,accessFor
       // The supplied link is stored for manual review. It is never fetched or downloaded.
       await event.save();
       await notify(event).catch(()=>{});
-      res.status(201).json({success:true,call:callRow(event),replayed:false});
+      res.status(201).json({success:true,call:{...callRow(event),avatar:avatar(user.avatar)},replayed:false});
     }catch(error){
       if(error?.code===11000&&id&&user){
         try{
           const event=await Event.findOne({_id:id,type:'call',user:user.username.toLowerCase(),'data.requestType':'network','data.requestId':requestId});
-          if(event&&(event.data.requestOriginalLink||event.data.callLink)===link)return res.json({success:true,call:callRow(event),replayed:true});
+          if(event&&(event.data.requestOriginalLink||event.data.callLink)===link)return res.json({success:true,call:{...callRow(event),avatar:avatar(user.avatar)},replayed:true});
           return fail(res,409,'Эта отправка уже использована для другой заявки. Открой форму заново.');
         }catch{}
       }
