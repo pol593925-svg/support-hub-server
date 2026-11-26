@@ -1,5 +1,5 @@
 'use strict';
-const types={tank:{kind:'tank',hp:1000},bastion:{kind:'tank',hp:1500},heli:{kind:'heli',hp:600},storm:{kind:'heli',hp:900}};
+const types=Object.freeze({tank:Object.freeze({kind:'tank',hp:1000}),heli:Object.freeze({kind:'heli',hp:600})});
 const ownerOf=(players,nick)=>[...players.values()].find(p=>p.nick===nick);
 function leave(players,p){const o=ownerOf(players,p.vehSeat);if(o&&o.veh&&o.veh.passenger===p.nick)o.veh.passenger=null;p.vehSeat=null;}
 function clean(players){

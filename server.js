@@ -4270,6 +4270,8 @@ const CS16_W = {
   flashbang: { price: 200 },
   smokegrenade: { price: 300 },
   defuser:   { price: 200, team: 'ct' }, // набор сапёра
+  veh_tank:  { price: 3200 },
+  veh_heli:  { price: 3200 },
 };
 // 3.24.0: лестница Gun-Game (19 стволов, финал — нож)
 const CS16_GG_LADDER = ['glock', 'usp', 'deagle', 'tec9', 'fiveseven', 'elite', 'mp5', 'ump45', 'p90', 'galil', 'famas', 'ak47', 'm4a1', 'sg552', 'aug', 'scout', 'm249', 'awp', 'knife'];
@@ -5295,6 +5297,11 @@ io.on('connection', (socket) => {
     if (p.money < w.price) { io.to(socket.id).emit('cs16_err', 'Не хватает денег'); return; }
     if (item === 'kevlar') { if (p.armor >= 100) return; p.armor = 100; }
     else if (item === 'defuser') { if (p.kit) return; p.kit = true; }
+    else if (item === 'veh_tank' || item === 'veh_heli') {
+      if(p.veh||p.vehSeat){io.to(socket.id).emit('cs16_err','У тебя уже есть техника или занято место стрелка');return;}
+      const variant=item.slice(4),spec=CS16Vehicles.types[variant];if(!spec)return;
+      p.veh={kind:spec.kind,variant,hp:spec.hp,max:spec.hp};
+    }
     else if (item === 'hegrenade' || item === 'flashbang' || item === 'smokegrenade') { /* гранаты — клиент считает лимит */ }
     else {p.weapon = item;}
     p.money -= w.price;
