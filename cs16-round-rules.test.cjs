@@ -10,7 +10,8 @@ test('only tank/helicopter packets pass guard; retired modes and RPG stay blocke
 });
 test('shop sells exactly tank/helicopter for 3200 and keeps retired weapons blocked',()=>{
  const combat=require('./cs16-combat'),classes=require('./cs16-classes'),vehicles=require('./cs16-vehicles');
- for(const id of ['rpg','mgveh','tankgun'])assert.equal(combat.weapons[id],undefined);
+ for(const id of ['rpg','tankgun'])assert.equal(combat.weapons[id],undefined);
+ assert.deepEqual(combat.weapons.mgveh,{dmg:20,penetration:.65,rangeModifier:.99,rpm:600,spread:.08});
  const p={nick:'player',alive:true,team:'ct',weapon:'usp',money:16000,classId:'antitank',nextClass:'antitank',rpgAmmo:3,veh:{kind:'tank',inside:true}};
  classes.apply(p);assert.equal(p.weapon,'m4a1');assert.equal(p.rpgAmmo,0);assert.equal(p.classId,'assault');p.veh=null;
  const handlers={},emitted=[],socket={id:'p',on:(n,f)=>handlers[n]=f},state={players:new Map([['p',p]]),gm:'classic',phase:'freeze'},box={socket,cs16:state,CS16Vehicles:vehicles,io:{to:()=>({emit:(...e)=>emitted.push(e)})},cs16Personal:()=>{},cs16Broadcast:()=>{}};

@@ -13,6 +13,8 @@
     ump45:[35,.65,.80,666,.13], galil:[30,.77,.98,675,.10], famas:[30,.70,.96,675,.09],
     scout:[88,.85,.98,48,2.8], sg552:[30,.95,.98,666,.08], aug:[28,.90,.98,666,.07],
     m249:[32,.80,.97,750,.18], fiveseven:[32,.91,.88,400,.12], tec9:[33,.90,.85,500,.15], elite:[38,.57,.85,750,.17],
+    // Vehicle machine gun: server-side damage/rate only; it is never sold in the shop.
+    mgveh:[20,.65,.99,600,.08],
   };
   const weapons = Object.freeze(Object.assign(Object.create(null),Object.fromEntries(Object.entries(values).map(([id,v]) => [id,Object.freeze({dmg:v[0],penetration:v[1],rangeModifier:v[2],rpm:v[3],spread:v[4]})]))));
   function damage(id, zone, distance, armor, heavy=false) {

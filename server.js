@@ -4625,8 +4625,12 @@ const cs16Front=require('./cs16-front-server').create({state:cs16,grid:()=>CS16_
     io.to('cs16-front').emit('cs16_cq_respawn',{nick:p.nick,pos,weapon:p.weapon,armor:p.armor,classId:p.classId});cs16Broadcast();}
 });
 const cs16Missiles=require('./cs16-missiles').create({state:cs16,grid:()=>CS16_GRID[cs16.map],army:cs16Front.units,
-  emit:(n,d)=>io.to('cs16-front').emit(n,d),frame:(n,d)=>io.to('cs16-front').volatile.emit(n,d),
-  impact:(p,pos,kind)=>{if(cs16.phase!=='live')return;io.to('cs16-front').emit('cs16_rpg_boom',{pos});cs16VehBoom(p,pos,kind==='rpg'?'rpg':'tankgun');}
+  // Tactical clients also see every vehicle rocket, its flight and its server-confirmed blast.
+  emit:(n,d)=>io.emit(n,d),frame:(n,d)=>io.volatile.emit(n,d),
+  impact:(p,pos,kind)=>{if(cs16.phase!=='live')return;
+    if(kind==='vehicle')io.emit('cs16_vehboom',{pos,kind:'rocket',by:p.nick});else io.emit('cs16_rpg_boom',{pos});
+    cs16VehBoom(p,pos,kind==='rpg'?'rpg':'tankgun');
+  }
 });
 setInterval(()=>cs16Missiles.tick(),50).unref();
 setInterval(()=>{if(cs16.phase==='live')cs16Front.tick();},200).unref();
@@ -5159,11 +5163,13 @@ io.on('connection', (socket) => {
   socket.on('cs16_shoot', (d) => {
     const p = cs16.players.get(socket.id);
     if (!p || !p.alive || cs16.phase !== 'live' || !d) return;
-    if(['mgveh','tankgun','rpg'].includes(d.weapon))return;
+    const vehicleMG=d.weapon==='mgveh';
+    if(['tankgun','rpg'].includes(d.weapon)||(vehicleMG&&!CS16Vehicles.active(cs16.players,p)))return;
     if (!CS16Combat.weapons[d.weapon] || !Array.isArray(d.origin) || !Array.isArray(d.dir) || d.origin.length!==3 || d.dir.length!==3 || ![...d.origin,...d.dir].every(Number.isFinite)) return;
-    if(p.frontSeat!=null)return;cs16Front.shoot(p,d);
-    fieldEnvironment.shoot(p,d);
-    socket.broadcast.emit('cs16_shoot', { nick: p.nick, origin: d.origin, dir: d.dir, weapon: d.weapon, distance:Number.isFinite(d.distance)?Math.max(0,Math.min(200,d.distance)):60 });
+    if(p.frontSeat!=null)return;
+    if(!vehicleMG){cs16Front.shoot(p,d);fieldEnvironment.shoot(p,d);}
+    const maxDistance=vehicleMG?1200:200;
+    socket.broadcast.emit('cs16_shoot', { nick: p.nick, origin: d.origin, dir: d.dir, weapon: d.weapon, distance:Number.isFinite(d.distance)?Math.max(0,Math.min(maxDistance,d.distance)):60 });
   });
 
   socket.on('cs16_hit', (d) => {
@@ -5172,12 +5178,13 @@ io.on('connection', (socket) => {
     const target = [...cs16.players.values()].find(x => x.nick.toLowerCase() === String(d.target || '').toLowerCase());
     if (!target || !target.alive) return;
     if (cs16.gm !== 'gg' && target.team === p.team) return; // фф выключен (в GG — все против всех)
-    if(['mgveh','tankgun','rpg'].includes(d.weapon))return;
+    const vehicleMG=d.weapon==='mgveh';
+    if(['tankgun','rpg'].includes(d.weapon)||(vehicleMG&&!CS16Vehicles.active(cs16.players,p)))return;
     if(p.frontSeat!=null||target.frontSeat!=null)return;
     const origin=[p.lx,p.ly+1.5,p.lz],end=[target.bot?target.bx:target.lx,(target.ly||0)+1,target.bot?target.bz:target.lz];
-    if([...origin,...end].every(Number.isFinite)){const shot=CS16HitValidation.segment(p,target,d);if(!shot)return;const {origin,dir,limit}=shot,grid=CS16_GRID[cs16.map];if(cs16Front.rayUnit(origin,dir,limit,p.team)||CS16Buildings.gridHit(grid,origin,dir,limit)||CS16Buildings.ray(grid,cs16.map,origin,dir,limit)!==null)return;}
-    const weapon = CS16Combat.weapons[d.weapon], distance = Number(d.dist);
-    if (!weapon || !Number.isFinite(distance) || distance<0 || distance>200 || (d.weapon==='knife'&&distance>2.85)) return;
+    if([...origin,...end].every(Number.isFinite)){const shot=CS16HitValidation.segment(p,target,d,vehicleMG?1201:201);if(!shot)return;const {origin,dir,limit}=shot,grid=CS16_GRID[cs16.map];if(cs16Front.rayUnit(origin,dir,limit,p.team)||CS16Buildings.gridHit(grid,origin,dir,limit)||CS16Buildings.ray(grid,cs16.map,origin,dir,limit)!==null)return;}
+    const weapon = CS16Combat.weapons[d.weapon], distance = Number(d.dist),maxDistance=vehicleMG?1200:200;
+    if (!weapon || !Number.isFinite(distance) || distance<0 || distance>maxDistance || (d.weapon==='knife'&&distance>2.85)) return;
     const interval = d.weapon==='knife'?(d.heavy?900:750):(d.weapon==='glock'||d.weapon==='famas'?75:60000/weapon.rpm);
     const now = Date.now();
     if (p.lastRegisteredHit && now-p.lastRegisteredHit<interval*.75) return;
@@ -5261,9 +5268,10 @@ io.on('connection', (socket) => {
     const target = [...cs16.players.values()].find(x => x.nick.toLowerCase() === String(d.target || '').toLowerCase());
     if (!target || !target.veh) return;
     if (cs16.gm !== 'gg' && target.team === p.team) return;
-    if(['mgveh','tankgun','rpg'].includes(d.weapon))return;
+    const vehicleMG=d.weapon==='mgveh';
+    if(['tankgun','rpg'].includes(d.weapon)||(vehicleMG&&!CS16Vehicles.active(cs16.players,p)))return;
     const weapon = CS16Combat.weapons[d.weapon];
-    if (!weapon) return;
+    if (!weapon || (vehicleMG&&(!Number.isFinite(d.dist)||d.dist<0||d.dist>1200))) return;
     const now = Date.now();
     if (now - (p.lastVehHit || 0) < 60000 / weapon.rpm * 0.85) return; // та же скорострельность, что у оружия
     p.lastVehHit = now;
@@ -5504,5 +5512,5 @@ app.post('/api/cs16/skins/equip', async (req, res) => {
 
 // 3.16.1: версия деплоя — сверка коммита на Render
 app.get('/api/version', (req, res) => {
-  res.json({ version: '6.1.1', combatVersion: '3.30.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
+  res.json({ version: '6.1.2', combatVersion: '3.33.0', commit: process.env.RENDER_GIT_COMMIT || null, now: Date.now() });
 });

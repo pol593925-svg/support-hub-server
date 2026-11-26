@@ -1,7 +1,7 @@
 'use strict';
 const finite3=v=>Array.isArray(v)&&v.length===3&&v.every(Number.isFinite);
 // Recheck the visible hit point, not a lower, possibly hidden point in the torso.
-function segment(attacker,target,shot){
+function segment(attacker,target,shot,maxDistance=201){
  const origin=[attacker.lx,attacker.ly+(attacker.crouched?1.02:1.62),attacker.lz];
  const scale=target.crouched ? .72 : 1,zone=shot.head?'head':shot.zone;
  const targetPos=[target.bot?target.bx:target.lx,target.ly||0,target.bot?target.bz:target.lz];
@@ -15,7 +15,7 @@ function segment(attacker,target,shot){
   origin.splice(0,3,...shot.origin);point.splice(0,3,...shot.point);
  }
  const delta=point.map((v,i)=>v-origin[i]),distance=Math.hypot(...delta);
- if(distance<.001||distance>201||shot.point&&Math.abs(distance-Number(shot.dist))>.2)return null;
+ if(distance<.001||distance>maxDistance||shot.point&&Math.abs(distance-Number(shot.dist))>.2)return null;
  return {origin,point,dir:delta.map(v=>v/distance),limit:Math.max(0,distance-(shot.point ? .02 : .36))};
 }
 module.exports={segment};

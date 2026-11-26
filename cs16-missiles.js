@@ -28,24 +28,24 @@ function create({state,grid,army,emit,frame,impact}){
  function visible(origin,t){
    const v=center(t).map((n,i)=>n-origin[i]),l=Math.hypot(...v);return l>.01&&Buildings.trace(grid(),state.map,origin,v.map(n=>n/l),l)>=l-.25;
  }
- function best(p,origin,dir){
-   let result=null,score=-Infinity;
+ function best(p,origin,dir,kind){
+   let result=null,score=-Infinity;const maxRange=kind==='vehicle'?1150:235;
    for(const t of targets(p)){
-     const v=center(t).map((n,i)=>n-origin[i]),l=Math.hypot(...v);if(l<2||l>235)continue;
+     const v=center(t).map((n,i)=>n-origin[i]),l=Math.hypot(...v);if(l<2||l>maxRange)continue;
      const angle=dot(v,dir)/l,rank=angle-l*.000035;if(angle<cosCone||rank<=score||!visible(origin,t))continue;score=rank;result=t;
    }return result;
  }
  function seek(p,kind,dir,now=Date.now()){
    const o=source(p,kind);if(!o||!valid(dir)||Math.abs(Math.hypot(...dir)-1)>.04){if(p)locks.delete(p);return {progress:0};}
    const old=locks.get(p);if(old&&now-old.last<80)return old.message;
-   const t=best(p,o,dir);if(!t){locks.delete(p);return {progress:0};}
+   const t=best(p,o,dir,kind);if(!t){locks.delete(p);return {progress:0};}
    const since=old?.id===t.id&&old.kind===kind&&now-old.last<=550?old.since:now;
    const message={name:t.name,progress:Math.min(1,(now-since)/LOCK_MS)};
    locks.set(p,{id:t.id,since,last:now,kind,message});return message;
  }
  function fire(p,kind,origin,dir,now=Date.now()){
    if(!valid(origin)||!valid(dir)||Math.abs(Math.hypot(...dir)-1)>.04||missiles.length>=64)return false;
-   const lock=locks.get(p),t=lock?.kind===kind&&lock.message.progress===1&&now-lock.last<=550?best(p,origin,dir):null;
+   const lock=locks.get(p),t=lock?.kind===kind&&lock.message.progress===1&&now-lock.last<=550?best(p,origin,dir,kind):null;
    const target=t?.id===lock?.id?t?.id:null;
    const m={id:++serial,by:p,kind,pos:origin.slice(),dir:norm(dir),target,traveled:0,speed:kind==='rpg'?55:70};
    missiles.push(m);emit('cs16_missile_start',{id:m.id,kind,pos:m.pos,dir:m.dir,speed:m.speed,locked:!!target});return true;
@@ -65,7 +65,7 @@ function create({state,grid,army,emit,frame,impact}){
    if(m.target){if(!target||!visible(m.pos,target))m.target=null;else{
      const want=norm(center(target).map((v,i)=>v-m.pos[i]));if(want)m.dir=steer(m.dir,want,dt*2.6);
    }}
-   const maxRange=m.kind==='rpg'?195:245,step=Math.min(m.speed*dt,maxRange-m.traveled);
+   const maxRange=m.kind==='rpg'?195:m.kind==='vehicle'?1150:245,step=Math.min(m.speed*dt,maxRange-m.traveled);
    let stop=Buildings.trace(grid(),state.map,m.pos,m.dir,step);
    for(const t of all){const p=t.pos,r=t.r;
      const hit=Buildings.rayBox(m.pos,m.dir,{min:[p[0]-r,p[1],p[2]-r],max:[p[0]+r,p[1]+t.h,p[2]+r]},stop);
