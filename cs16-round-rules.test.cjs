@@ -1,24 +1,29 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),rules=require('./cs16-round-rules');
 const source=fs.readFileSync(require.resolve('./server.js'),'utf8');
-test('only tank/helicopter packets pass guard; retired modes and RPG stay blocked',()=>{
+test('tank/helicopter and manual RPG packets pass guard; retired modes stay blocked',()=>{
  let middleware;const events=[];rules.guard({use:fn=>middleware=fn,emit:(...e)=>events.push(e)});
- const retired=['cs16_army','cs16_army_loader','cs16_army_ready','cs16_army_bomb','cs16_army_claim','cs16_front_charge','cs16_front_board','cs16_front_controls','cs16_seek','cs16_rpg'];
+ const retired=['cs16_army','cs16_army_loader','cs16_army_ready','cs16_army_bomb','cs16_army_claim','cs16_front_charge','cs16_front_board','cs16_front_controls','cs16_seek'];
  for(const event of retired){let passed=false;middleware([event,{}],()=>passed=true);assert.equal(passed,false,event);}
- for(const item of ['rpg','veh_jet','veh_bastion','veh_storm','mgveh','tankgun']){let passed=false;middleware(['cs16_buy',item],()=>passed=true);assert.equal(passed,false,item);}
- for(const packet of [['cs16_buy','veh_tank'],['cs16_buy','veh_heli'],['cs16_vehicle_rocket',{}],['cs16_crew',{}],['cs16_veh',{}],['cs16_vehboom',{}],['cs16_vehhit',{}],['cs16_vehcrate',{}],['cs16_buy','awp'],['cs16_shoot',{}],['cs16_environment',{}],['cs16_magic',{}]]){let passed=false;middleware(packet,()=>passed=true);assert(passed,packet[0]+':'+packet[1]);}
+ for(const item of ['veh_jet','veh_bastion','veh_storm','mgveh','tankgun']){let passed=false;middleware(['cs16_buy',item],()=>passed=true);assert.equal(passed,false,item);}
+ for(const packet of [['cs16_buy','veh_tank'],['cs16_buy','veh_heli'],['cs16_buy','rpg'],['cs16_rpg',{}],['cs16_vehicle_rocket',{}],['cs16_crew',{}],['cs16_veh',{}],['cs16_vehboom',{}],['cs16_vehhit',{}],['cs16_vehcrate',{}],['cs16_buy','awp'],['cs16_shoot',{}],['cs16_environment',{}],['cs16_magic',{}]]){let passed=false;middleware(packet,()=>passed=true);assert(passed,packet[0]+':'+packet[1]);}
  assert.equal(events.length,1,'legacy packets must not flood the error channel');
 });
-test('shop sells exactly tank/helicopter for 3200 and keeps retired weapons blocked',()=>{
+test('shop sells RPG for 4000 with four rockets, plus tank/helicopter for 3200',()=>{
  const combat=require('./cs16-combat'),classes=require('./cs16-classes'),vehicles=require('./cs16-vehicles');
- for(const id of ['rpg','tankgun'])assert.equal(combat.weapons[id],undefined);
+ for(const id of ['rpg','tankgun'])assert.equal(combat.weapons[id],undefined,'RPG is a server projectile, not hitscan');
  assert.deepEqual(combat.weapons.mgveh,{dmg:20,penetration:.65,rangeModifier:.99,rpm:600,spread:.08});
  const p={nick:'player',alive:true,team:'ct',weapon:'usp',money:16000,classId:'antitank',nextClass:'antitank',rpgAmmo:3,veh:{kind:'tank',inside:true}};
  classes.apply(p);assert.equal(p.weapon,'m4a1');assert.equal(p.rpgAmmo,0);assert.equal(p.classId,'assault');p.veh=null;
  const handlers={},emitted=[],socket={id:'p',on:(n,f)=>handlers[n]=f},state={players:new Map([['p',p]]),gm:'classic',phase:'freeze'},box={socket,cs16:state,CS16Vehicles:vehicles,io:{to:()=>({emit:(...e)=>emitted.push(e)})},cs16Personal:()=>{},cs16Broadcast:()=>{}};
  vm.createContext(box);let a=source.indexOf('const CS16_W = {'),b=source.indexOf('\n};',a)+3;vm.runInContext(source.slice(a,b),box);
  a=source.indexOf("  socket.on('cs16_buy',");b=source.indexOf("  socket.on('cs16_plant',",a);vm.runInContext(source.slice(a,b),box);
- for(const item of ['rpg','veh_jet','veh_bastion','veh_storm','mgveh','tankgun'])handlers.cs16_buy(item);
+ for(const item of ['veh_jet','veh_bastion','veh_storm','mgveh','tankgun'])handlers.cs16_buy(item);
  assert.equal(p.money,16000);assert.equal(p.weapon,'m4a1');assert.equal(p.veh,null);
+ p.money=3999;handlers.cs16_buy('rpg');assert.equal(p.money,3999);assert.equal(p.weapon,'m4a1');
+ p.money=16000;handlers.cs16_buy('rpg');assert.equal(p.money,12000);assert.equal(p.weapon,'rpg');assert.equal(p.rpgAmmo,4);
+ p.rpgAmmo=1;handlers.cs16_buy('rpg');assert.equal(p.money,8000);assert.equal(p.rpgAmmo,4,'repurchase restores the four-rocket loadout');
+ assert(emitted.some(e=>e[0]==='cs16_bought'&&e[1].item==='rpg'&&e[1].money===8000));
+ p.weapon='m4a1';p.rpgAmmo=0;p.money=16000;
  handlers.cs16_buy('veh_tank');assert.equal(p.money,12800);assert.equal(p.weapon,'m4a1');assert.equal(p.veh.kind,'tank');assert.equal(p.veh.hp,1000);assert.equal(p.veh.max,1000);
  handlers.cs16_buy('veh_heli');assert.equal(p.money,12800,'second vehicle must be free/rejected');assert.equal(p.veh.variant,'tank');
  p.veh=null;p.money=3199;handlers.cs16_buy('veh_heli');assert.equal(p.money,3199);assert.equal(p.veh,null);

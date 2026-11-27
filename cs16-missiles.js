@@ -48,7 +48,7 @@ function create({state,grid,army,emit,frame,impact}){
    const lock=locks.get(p),t=lock?.kind===kind&&lock.message.progress===1&&now-lock.last<=550?best(p,origin,dir,kind):null;
    const target=t?.id===lock?.id?t?.id:null;
    const m={id:++serial,by:p,kind,pos:origin.slice(),dir:norm(dir),target,traveled:0,speed:kind==='rpg'?55:70};
-   missiles.push(m);emit('cs16_missile_start',{id:m.id,kind,pos:m.pos,dir:m.dir,speed:m.speed,locked:!!target});return true;
+   missiles.push(m);emit('cs16_missile_start',{id:m.id,kind,by:p.nick,pos:m.pos,dir:m.dir,speed:m.speed,locked:!!target});return true;
  }
  function vehicle(p,d,now=Date.now()){
    const o=source(p,'vehicle');if(!o||now<(p.guidedSalvo||0)||!valid(d?.dir)||Math.abs(Math.hypot(...d.dir)-1)>.04)return false;

@@ -1,0 +1,69 @@
+'use strict';
+
+const TYPES=Object.freeze({
+ ap:Object.freeze({item:'mine_ap',pack:5,max:25,armMs:900,trigger:1.35}),
+ at:Object.freeze({item:'mine_at',pack:5,max:25,armMs:1400,trigger:2.85}),
+});
+const MAX_ACTIVE=96;
+const kindOf=item=>item==='mine_ap'?'ap':item==='mine_at'?'at':null;
+const positionOf=p=>[p.bot?p.bx:p.lx,Number.isFinite(p.ly)?p.ly:0,p.bot?p.bz:p.lz];
+const enemy=(state,mine,target)=>target!==mine.owner&&target.team&&(state.gm==='gg'||target.team!==mine.team);
+
+function create({state,emit,visible=emit,personal,onDetonate,walkHeight}){
+ const active=new Map();let serial=0;
+ function inventory(p){if(!p.mines||typeof p.mines!=='object')p.mines={ap:0,at:0};return p.mines;}
+ function row(mine){return {id:mine.id,kind:mine.kind,pos:mine.pos.slice(),team:mine.team,by:mine.owner.nick,armedAt:mine.armedAt};}
+ function snapshot(owner){return {map:state.map,rows:[...active.values()].filter(m=>!owner||m.owner===owner).map(row)};}
+ function buy(p,item){
+  const kind=kindOf(item);if(!kind)return null;
+  const bag=inventory(p),spec=TYPES[kind];
+  if(bag[kind]>=spec.max)return {error:'У тебя уже максимум мин этого типа'};
+  bag[kind]=Math.min(spec.max,bag[kind]+spec.pack);
+  return {kind,count:bag[kind]};
+ }
+ function place(p,data,now=Date.now()){
+  const kind=kindOf(data?.kind==='mine_ap'||data?.kind==='mine_at'?data.kind:data?.kind==='ap'?'mine_ap':data?.kind==='at'?'mine_at':null),spec=TYPES[kind];
+  if(!spec)return {error:'Неизвестный тип мины'};
+  if(state.phase!=='live'||!p?.alive||!p.team||p.frontSeat!=null||p.veh?.inside||p.vehSeat)return {error:'Сейчас установить мину нельзя'};
+  const bag=inventory(p);if(!(bag[kind]>0))return {error:'Сначала купи комплект мин в магазине'};
+  if(now-(p.minePlacedAt||0)<450)return {error:'Подожди перед следующей установкой'};
+  if(active.size>=MAX_ACTIVE)return {error:'На карте слишком много мин — дождись срабатывания'};
+  const pos=positionOf(p);if(!pos.every(Number.isFinite))return {error:'Позиция ещё не синхронизирована'};
+  pos[1]=(walkHeight?walkHeight(pos[0],pos[2]):pos[1])+.035;
+  for(const mine of active.values())if(Math.hypot(mine.pos[0]-pos[0],mine.pos[2]-pos[2])<.42)return {error:'Здесь уже установлена мина'};
+  bag[kind]--;p.minePlacedAt=now;
+  const mine={id:++serial,kind,owner:p,team:p.team,pos,armedAt:now+spec.armMs};
+  active.set(mine.id,mine);visible('cs16_mine_add',row(mine),p);personal?.(p);
+  return {mine:row(mine),count:bag[kind]};
+ }
+ function detonate(mine){
+  if(!active.delete(mine.id))return false;
+  emit('cs16_mine_remove',{id:mine.id});
+  emit('cs16_mine_boom',{id:mine.id,kind:mine.kind,pos:mine.pos.slice(),by:mine.owner.nick});
+  onDetonate(mine,mine.owner);return true;
+ }
+ function tick(now=Date.now()){
+  if(state.phase!=='live')return 0;
+  let exploded=0;
+  for(const mine of [...active.values()]){
+   if(now<mine.armedAt)continue;const spec=TYPES[mine.kind];let triggered=false;
+   for(const target of state.players.values()){
+    if(!target.alive||!enemy(state,mine,target))continue;
+    if(mine.kind==='ap'){
+     if(target.frontSeat!=null||target.vehSeat||target.veh?.inside)continue;
+     const pos=positionOf(target);if(!pos.every(Number.isFinite))continue;
+     if(Math.abs(pos[1]-mine.pos[1])<2.15&&Math.hypot(pos[0]-mine.pos[0],pos[2]-mine.pos[2])<=spec.trigger){triggered=true;break;}
+    }else{
+     const vehicle=target.veh,pos=vehicle?.pos;
+     if(vehicle?.kind!=='tank'||!(vehicle.hp>0)||!Array.isArray(pos)||pos.length!==3||!pos.every(Number.isFinite))continue;
+     if(Math.abs(pos[1]-mine.pos[1])<2.3&&Math.hypot(pos[0]-mine.pos[0],pos[2]-mine.pos[2])<=spec.trigger){triggered=true;break;}
+    }
+   }
+   if(triggered&&detonate(mine))exploded++;
+  }
+  return exploded;
+ }
+ function reset(){active.clear();serial=0;for(const p of state.players.values())p.mines={ap:0,at:0};emit('cs16_mines',{map:state.map,rows:[]});}
+ return {buy,place,tick,reset,snapshot,count:()=>active.size};
+}
+module.exports={TYPES,MAX_ACTIVE,create,kindOf};

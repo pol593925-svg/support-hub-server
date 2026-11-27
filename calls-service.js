@@ -95,6 +95,6 @@ module.exports=function install({app,io,User,Event}){
   }catch(error){res.status(400).json({success:false,message:error.message});}
  });
  workflow.install({app,User,Event,actor,bearer,notify,callRow});
- return {issue,valid,notify,actor};
+ return {issue,valid,notify,actor,reviewActor};
 };
 module.exports.calendar=calendar;module.exports.dayBounds=dayBounds;
