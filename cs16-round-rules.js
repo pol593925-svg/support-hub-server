@@ -2,10 +2,10 @@
 // The public CS room has one ruleset. Old clients cannot re-enable removed modes.
 const TEAM_SIZE=5,MODE='classic',MAPS=Object.freeze(['dust2','inferno']);
 function normalize(state){state.mode=TEAM_SIZE;state.gm=MODE;state.army=false;if(!MAPS.includes(state.map))state.map=MAPS[0];}
-const retired=new Set(['cs16_army','cs16_army_loader','cs16_army_ready','cs16_army_bomb','cs16_army_claim','cs16_front_charge','cs16_front_board','cs16_front_controls','cs16_seek']);
-const allowedVehicles=new Set(['veh_tank','veh_heli']),retiredBuy=/^(mgveh|tankgun)$/;
+const retired=new Set(['cs16_army','cs16_army_loader','cs16_army_ready','cs16_army_bomb','cs16_army_claim','cs16_front_charge','cs16_front_board','cs16_front_controls','cs16_seek','cs16_vehicle_rocket','cs16_crew','cs16_veh','cs16_vehboom','cs16_vehhit','cs16_vehcrate']);
+const retiredBuy=/^(mgveh|tankgun|mine_at)$/;
 function guard(socket){let lastNotice=-Infinity;socket.use(([event,item],next)=>{
- const blockedBuy=event==='cs16_buy'&&typeof item==='string'&&(retiredBuy.test(item)||(item.startsWith('veh_')&&!allowedVehicles.has(item)));
+ const blockedBuy=event==='cs16_buy'&&typeof item==='string'&&(retiredBuy.test(item)||item.startsWith('veh_'));
  if(retired.has(event)||blockedBuy){const now=Date.now();if(now-lastNotice>2000){lastNotice=now;socket.emit('cs16_err','Этот режим или предмет недоступны в бою 5×5');}return;}
  next();
 });}
